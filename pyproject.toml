@@ -1,0 +1,14 @@
+[project]
+name = "workflow-spatial-fairness"
+version = "0.1.0"
+description = "A spatial fairness workflow for group fairness bias identification."
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    "argparse>=1.4.0",
+    "folium>=0.20.0",
+    "numpy>=2.4.2",
+    "pandas>=3.0.1",
+    "rtree>=1.4.1",
+    "scikit-learn>=1.8.0",
+]
