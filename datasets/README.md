@@ -12,6 +12,13 @@ datasets/
 │   └── README.md          # Dataset-specific documentation
 ```
 
+## Datasets
+
+- **`old/`** — os CSVs originais commitados (LAR, Crime, Semisynth, Synth_fair, Synth_unfair).
+- **[`synth_local/`](synth_local/README.md)** — controle sintético que separa a referência
+  global da referência de vizinhança, com gabarito conhecido. Dados **gerados**, não
+  commitados: `uv run python src/synth_data.py`.
+
 ## Adding a New Dataset
 
 1. Create a new subdirectory: `datasets/<dataset-name>/`

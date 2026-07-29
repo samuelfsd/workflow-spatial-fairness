@@ -43,12 +43,13 @@ uv run python -m unittest discover -s tests
 
 ## Running Experiments
 
-The CLI has four commands:
+The CLI has five commands:
 
 ```bash
 uv run python src/main.py unrestricted --dataset lar --out outputs --no-maps
 uv run python src/main.py one-partitioning --dataset crime --out outputs --maps
 uv run python src/main.py multiple-partitionings --dataset semisynth --out outputs
+uv run python src/main.py explain --dataset crime --out outputs
 uv run python src/main.py all --out outputs --no-maps
 ```
 
@@ -68,7 +69,10 @@ uv run python src/main.py unrestricted \
 - `unrestricted`: reproduces the authors' unrestricted scan with 100 KMeans seeds and dataset-specific square radii, then compares against HDBSCAN clusters evaluated with SUL.
 - `one-partitioning`: runs fixed grid partitioning, SUL, MeanVar, Monte Carlo thresholds, and HDBSCAN comparison. Defaults include LAR `100x50` and `25x12`, Crime `20x20`.
 - `multiple-partitionings`: generates 100 random rectangular grids with dimensions sampled from `10..40` and reports MeanVar stability.
+- `explain`: runs the pipeline once (clustering → metrics → Monte Carlo → detection) and emits stage-by-stage explainability outputs: a clusters-only map, a per-cluster scoring table, the Monte Carlo null distribution, a red/green/gray detection map, and a summary JSON. See [docs/PIPELINE.md](docs/PIPELINE.md) for the full pipeline walkthrough (in Portuguese).
 - `all`: runs the default reproduction suite across the main datasets.
+
+Clustering is pluggable: partitioners are registered in `src/clustering/registry.py` and selected with `--clustering` (currently `hdbscan`). New algorithms only need to return `Partition` objects (see `src/clustering/base.py`).
 
 ## Outputs
 
@@ -96,7 +100,7 @@ Key output columns:
 - `signif_threshold`: Monte Carlo threshold for significance.
 - `significant_regions`: number of regions or clusters above the threshold.
 - `best_region_n`, `best_region_rate`: size and local positive rate of the strongest region.
-- `noise_rate`: HDBSCAN-only share of points not assigned to any cluster.
+- `noise_rate`: HDBSCAN-only share of points not assigned to any cluster. These points are excluded from the comparison (no region to compare them against) — the method makes no fairness claim about them.
 
 Use `max_sul >= signif_threshold` as the basic significance check.
 

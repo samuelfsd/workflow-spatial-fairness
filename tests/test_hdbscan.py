@@ -27,6 +27,22 @@ class HDBSCANTests(unittest.TestCase):
         self.assertTrue(clustered_points.isdisjoint(partition.noise_points))
         self.assertEqual(len(clustered_points) + partition.noise_n, len(df))
 
+    def test_max_cluster_size_caps_returned_clusters(self):
+        df = pd.DataFrame(
+            {
+                "lat": [0.0, 0.0001, 0.0002, 1.0, 1.0001, 1.0002, 20.0],
+                "lon": [0.0, 0.0001, 0.0002, 1.0, 1.0001, 1.0002, 20.0],
+            }
+        )
+
+        partition = fit_hdbscan_partition(
+            df, min_cluster_frac=0.4, min_cluster_size_min=2, min_samples=2, max_cluster_size=2
+        )
+
+        self.assertEqual(partition.params["max_cluster_size"], 2)
+        for region in partition.regions:
+            self.assertLessEqual(len(region["points"]), 2)
+
 
 if __name__ == "__main__":
     unittest.main()

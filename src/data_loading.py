@@ -21,6 +21,10 @@ class DatasetSpec:
     radii_stop: float
     radii_step: float
     fixed_grids: tuple[tuple[int, int], ...]
+    #: Path under `datasets/` holding the CSV. New datasets follow the
+    #: one-directory-per-dataset convention in `datasets/README.md`; the original
+    #: committed CSVs stay in `old/`.
+    directory: str = "old"
 
 
 @dataclass
@@ -44,6 +48,17 @@ DATASET_SPECS: dict[str, DatasetSpec] = {
     "semisynth": DatasetSpec("semisynth", "Semisynth.csv", "label", 0.01, 0.2, 0.01, ((20, 20),)),
     "synth_fair": DatasetSpec("synth_fair", "Synth_fair.csv", "label", 0.01, 0.2, 0.01, ((20, 20),)),
     "synth_unfair": DatasetSpec("synth_unfair", "Synth_unfair.csv", "label", 0.01, 0.2, 0.01, ((20, 20),)),
+    # Generated, not committed: run `uv run python src/synth_data.py` first.
+    "synth_local": DatasetSpec(
+        "synth_local",
+        "Synth_local.csv",
+        "label",
+        0.01,
+        0.2,
+        0.01,
+        ((20, 20),),
+        directory="synth_local/data",
+    ),
 }
 
 
@@ -57,7 +72,7 @@ def load_dataset(name: str) -> LoadedDataset:
         raise ValueError(f"Unknown dataset: {name}")
 
     spec = DATASET_SPECS[name]
-    path = REPO_ROOT / "datasets" / "old" / spec.filename
+    path = REPO_ROOT / "datasets" / spec.directory / spec.filename
     if not path.exists():
         raise FileNotFoundError(f"Dataset not found: {path}")
 

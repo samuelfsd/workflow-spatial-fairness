@@ -79,6 +79,60 @@ def calculate_meanvar(rhos: Iterable[float]) -> float:
     return float(np.mean((values - mean_rho) ** 2))
 
 
+def calculate_gini(rhos: Iterable[float]) -> float:
+    """Gini coefficient of per-region positive rates (0 = perfect equality).
+
+    Unweighted across regions, matching MeanVar; NaN rates are ignored.
+    Returns 0.0 for empty input or when all rates are zero.
+    """
+    values = np.asarray(list(rhos), dtype=float)
+    values = values[~np.isnan(values)]
+    if len(values) == 0:
+        return 0.0
+
+    mean_rho = float(np.mean(values))
+    if mean_rho == 0.0:
+        return 0.0
+
+    diffs = np.abs(values[:, None] - values[None, :])
+    return float(diffs.sum() / (2.0 * len(values) ** 2 * mean_rho))
+
+
+def calculate_gini_contributions(rhos: Iterable[float]) -> np.ndarray:
+    """Leave-one-out contribution of each region to the partition Gini.
+
+    contribution[i] = gini(all rates) - gini(rates without region i).
+    Positive values mean the region pushes the map's inequality up;
+    NaN rates (empty regions) get NaN contributions.
+    """
+    values = np.asarray(list(rhos), dtype=float)
+    total = calculate_gini(values)
+    contributions = np.full(len(values), np.nan)
+    for i in range(len(values)):
+        if np.isnan(values[i]):
+            continue
+        contributions[i] = total - calculate_gini(np.delete(values, i))
+    return contributions
+
+
+def classify_direction(n: int, p: int, n_total: int, p_total: int) -> str:
+    """Classify a region's deviation direction relative to the outside rate.
+
+    Returns "negative" if the local positive rate is below the outside rate,
+    "positive" if above, and "neutral" for ties or degenerate regions.
+    """
+    if n == 0 or n == n_total:
+        return "neutral"
+
+    rho_in = p / n
+    rho_out = (p_total - p) / (n_total - n)
+    if rho_in < rho_out:
+        return "negative"
+    if rho_in > rho_out:
+        return "positive"
+    return "neutral"
+
+
 def scan_regions(
     regions: list[dict],
     types: np.ndarray,
@@ -128,6 +182,27 @@ def get_random_types(n_total: int, p_total: int, rng: np.random.Generator | None
     return generator.binomial(size=n_total, n=1, p=p_total / n_total)
 
 
+def simulate_null_max_suls(
+    n_alt_worlds: int,
+    regions: list[dict],
+    n_total: int,
+    p_total: int,
+    seed: int | None = None,
+) -> np.ndarray:
+    """Return the max SUL per alternate world (the Monte Carlo null distribution)."""
+    if n_alt_worlds <= 0 or not regions:
+        return np.asarray([], dtype=float)
+
+    rng = np.random.default_rng(seed)
+    alt_max_scores = []
+    for _ in range(n_alt_worlds):
+        alt_types = get_random_types(n_total, p_total, rng=rng)
+        _, alt_max, _ = scan_regions(regions, alt_types, n_total, p_total)
+        alt_max_scores.append(alt_max)
+
+    return np.asarray(alt_max_scores, dtype=float)
+
+
 def get_signif_threshold(
     signif_level: float,
     n_alt_worlds: int,
@@ -137,19 +212,13 @@ def get_signif_threshold(
     seed: int | None = None,
 ) -> float:
     """Return the Monte Carlo SUL threshold used by the authors."""
-    if n_alt_worlds <= 0 or not regions:
+    alt_max_scores = simulate_null_max_suls(n_alt_worlds, regions, n_total, p_total, seed=seed)
+    if len(alt_max_scores) == 0:
         return 0.0
 
-    rng = np.random.default_rng(seed)
-    alt_max_scores = []
-    for _ in range(n_alt_worlds):
-        alt_types = get_random_types(n_total, p_total, rng=rng)
-        _, alt_max, _ = scan_regions(regions, alt_types, n_total, p_total)
-        alt_max_scores.append(alt_max)
-
-    alt_max_scores.sort(reverse=True)
-    idx = min(int(signif_level * n_alt_worlds), len(alt_max_scores) - 1)
-    return float(alt_max_scores[idx])
+    ordered = np.sort(alt_max_scores)[::-1]
+    idx = min(int(signif_level * n_alt_worlds), len(ordered) - 1)
+    return float(ordered[idx])
 
 
 def select_significant_regions(
