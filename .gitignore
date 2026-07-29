@@ -129,7 +129,10 @@ dmypy.json
 .pyre/
 
 .DS_Store
-outputs/
+outputs**/
+
+# docs
+docs**/
 
 # ia
 .opencode
@@ -137,3 +140,8 @@ outputs/
 .agents
 AGENTS.md
 CLAUDE.md
+CONTEXT.md
+
+# Dados gerados de datasets novos não são commitados (ver datasets/README.md)
+datasets/*/data/*
+!datasets/*/data/.gitkeep

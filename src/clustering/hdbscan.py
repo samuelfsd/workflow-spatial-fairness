@@ -2,38 +2,44 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
-
 import numpy as np
 import pandas as pd
 from sklearn.cluster import HDBSCAN
 
+from clustering.base import Partition
 
-@dataclass
-class HDBSCANPartition:
-    min_cluster_frac: float
-    min_cluster_size: int
-    labels: np.ndarray
-    regions: list[dict]
-    noise_points: list[int]
-
-    @property
-    def noise_n(self) -> int:
-        return len(self.noise_points)
+# Backward-compat alias: earlier code imported a dedicated HDBSCAN dataclass.
+HDBSCANPartition = Partition
 
 
 def fit_hdbscan_partition(
     df: pd.DataFrame,
     min_cluster_frac: float,
     min_cluster_size_min: int = 25,
-) -> HDBSCANPartition:
-    """Fit one HDBSCAN partition using haversine distance on lat/lon."""
+    min_samples: int = 60,
+    max_cluster_size: int | None = None,
+) -> Partition:
+    """Fit one HDBSCAN partition using haversine distance on lat/lon.
+
+    `min_samples` is capped at `min_cluster_size` and kept small by default:
+    sklearn's fallback (min_samples = min_cluster_size) allocates an
+    n_points x min_samples core-distance matrix, which OOMs on large datasets
+    when min_cluster_size is a fraction of the dataset.
+
+    `max_cluster_size` (optional) is HDBSCAN's own EOM limit: the excess-of-mass
+    selection will not return a cluster larger than this, descending the density
+    hierarchy to smaller sub-clusters instead — an *organic* cap (no geometric
+    split). Points that fall between selected clusters become unassigned, so a
+    tighter cap tends to raise the noise fraction. See ADR-0001.
+    """
     min_cluster_size = max(min_cluster_size_min, int(round(min_cluster_frac * len(df))))
+    effective_min_samples = min(min_samples, min_cluster_size)
     coords = np.radians(df[["lat", "lon"]].to_numpy(dtype=float))
 
     clusterer = HDBSCAN(
         min_cluster_size=min_cluster_size,
-        min_samples=None,
+        min_samples=effective_min_samples,
+        max_cluster_size=max_cluster_size,
         metric="haversine",
         cluster_selection_method="eom",
         copy=True,
@@ -50,13 +56,20 @@ def fit_hdbscan_partition(
                 "type": "hdbscan",
                 "min_cluster_frac": float(min_cluster_frac),
                 "min_cluster_size": int(min_cluster_size),
+                "max_cluster_size": max_cluster_size,
             }
         )
 
     noise_points = np.flatnonzero(labels == -1).astype(int).tolist()
-    return HDBSCANPartition(
-        min_cluster_frac=float(min_cluster_frac),
-        min_cluster_size=int(min_cluster_size),
+    return Partition(
+        method="hdbscan",
+        params={
+            "min_cluster_frac": float(min_cluster_frac),
+            "min_cluster_size": int(min_cluster_size),
+            "min_samples": int(effective_min_samples),
+            "max_cluster_size": max_cluster_size,
+            "metric": "haversine",
+        },
         labels=labels,
         regions=regions,
         noise_points=noise_points,
@@ -67,12 +80,16 @@ def run_hdbscan_sweep(
     df: pd.DataFrame,
     min_cluster_fracs: tuple[float, ...] = (0.005, 0.01, 0.02),
     min_cluster_size_min: int = 25,
-) -> list[HDBSCANPartition]:
+    min_samples: int = 60,
+    max_cluster_size: int | None = None,
+) -> list[Partition]:
     return [
         fit_hdbscan_partition(
             df,
             min_cluster_frac=frac,
             min_cluster_size_min=min_cluster_size_min,
+            min_samples=min_samples,
+            max_cluster_size=max_cluster_size,
         )
         for frac in min_cluster_fracs
     ]

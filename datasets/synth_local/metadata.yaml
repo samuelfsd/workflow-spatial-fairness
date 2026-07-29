@@ -1,0 +1,41 @@
+name: synth_local
+description: >
+  Controle sintético que separa as duas referências de justiça espacial: um bolsão
+  puramente local (taxa igual à global, vizinhança bem acima) e um bolsão puramente
+  global (taxa abaixo da global, vizinhança acompanhando). Gera gabarito conhecido
+  para validar que o baseline de vizinhança e o baseline global são complementares.
+source: Gerado por `src/synth_data.py` (determinístico por seed; dados não commitados)
+spatial_coverage: Coordenadas fictícias em três agrupamentos (~34°N/-118°, ~37°N/-122°, ~40°N/-100°)
+temporal_coverage: não se aplica (sintético)
+files:
+  - filename: data/Synth_local.csv
+    description: 13.600 pontos em 17 blobs densos, com desfecho binário plantado
+    format: csv
+variables:
+  - name: lat
+    description: Latitude em graus decimais
+    type: continuous
+  - name: lon
+    description: Longitude em graus decimais
+    type: continuous
+  - name: label
+    description: Desfecho binário (1 = positivo). Normalizado para `outcome` no carregamento
+    type: binary
+sensitive_attributes: []   # o atributo sensível deste trabalho é a própria região (cluster)
+spatial_columns:
+  latitude: lat
+  longitude: lon
+ground_truth:
+  n_total: 13600
+  global_rate: 0.50
+  local_pocket:
+    rate: 0.50
+    peer_rate: 0.75
+    expected_sul: "≈ 0 — cega por construção"
+    expected_local_z: "fortemente negativo"
+  global_pocket:
+    rate: 0.30
+    peer_rate: 0.30
+    expected_sul: "alta"
+    expected_local_z: "≈ 0 — vizinhos acompanham"
+  filler_rate: 0.40
