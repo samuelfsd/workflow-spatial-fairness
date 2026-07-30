@@ -12,6 +12,19 @@ from clustering.base import Partition
 HDBSCANPartition = Partition
 
 
+def effective_min_cluster_size(
+    n_points: int, min_cluster_frac: float, min_cluster_size_min: int = 25
+) -> int:
+    """Smallest cluster HDBSCAN will accept for this dataset and fraction.
+
+    Exposed because it is also the **floor of any size cap**: asking for a cap at
+    or below this value describes an empty set ("no cluster smaller than X and
+    none larger than Y ≤ X"), and HDBSCAN answers it by returning no clusters at
+    all. On LAR at frac 0.005 the floor is 1.032 points.
+    """
+    return max(min_cluster_size_min, int(round(min_cluster_frac * n_points)))
+
+
 def fit_hdbscan_partition(
     df: pd.DataFrame,
     min_cluster_frac: float,
@@ -32,7 +45,7 @@ def fit_hdbscan_partition(
     split). Points that fall between selected clusters become unassigned, so a
     tighter cap tends to raise the noise fraction. See ADR-0001.
     """
-    min_cluster_size = max(min_cluster_size_min, int(round(min_cluster_frac * len(df))))
+    min_cluster_size = effective_min_cluster_size(len(df), min_cluster_frac, min_cluster_size_min)
     effective_min_samples = min(min_samples, min_cluster_size)
     coords = np.radians(df[["lat", "lon"]].to_numpy(dtype=float))
 
