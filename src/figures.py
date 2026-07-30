@@ -290,6 +290,76 @@ def dispersion_figure(table: pd.DataFrame, *, dataset: str, stat: str = "cv") ->
     return fig
 
 
+#: The readings of the partition profile, as (column, title, how to read it, format).
+PROFILE_READINGS = (
+    ("cluster_size_cv", "CV do tamanho dos clusters", "menor = clusters mais comparáveis", "num"),
+    ("noise_rate", "Fração não atribuída", "menor = mais cobertura (o custo do cap)", "pct"),
+    ("rho_sigma", "σ das taxas entre clusters", "não deve desabar: é o sinal", "num"),
+    ("raio_medio_km_mean", "Raio médio (km)", "menor = clusters mais compactos", "num"),
+)
+
+
+def profile_figure(profile: pd.DataFrame, *, dataset: str, readings=PROFILE_READINGS) -> Figure:
+    """The partition profile as small multiples: one panel per reading.
+
+    This is the decision figure for the size cap (ADR-0001). The readings live on
+    different scales — a coefficient of variation and a percentage of points — so
+    they get **separate panels**, never a second y-axis. Colour identifies the
+    configuration and is consistent with `dispersion_figure`, so a configuration
+    keeps its identity across the whole report.
+    """
+    available = [item for item in readings if item[0] in profile.columns]
+    if not available or profile.empty:
+        raise ValueError("profile_figure needs a non-empty profile with at least one reading")
+
+    labels = [str(value) for value in profile["config"]]
+    ncols = min(len(available), 2)
+    nrows = math.ceil(len(available) / ncols)
+    with plt.rc_context(_RC):
+        fig, axes = plt.subplots(
+            nrows=nrows,
+            ncols=ncols,
+            figsize=(SLIDE_SIZE[0], max(SLIDE_SIZE[1], 3.1 * nrows)),
+        )
+    flat = np.atleast_1d(axes).ravel()
+
+    for ax, (column, title, hint, kind) in zip(flat, available):
+        values = [float(value) for value in profile[column]]
+        colors = [CATEGORICAL[idx % len(CATEGORICAL)] for idx in range(len(values))]
+        bars = ax.bar(range(len(values)), values, color=colors, width=0.62, linewidth=0)
+        for bar, value in zip(bars, values):
+            text = f"{value:.1%}".replace(".", ",") if kind == "pct" else _fmt_value(value)
+            ax.annotate(
+                text,
+                (bar.get_x() + bar.get_width() / 2.0, value),
+                textcoords="offset points",
+                xytext=(0, 3),
+                ha="center",
+                fontsize=9,
+                color=INK_SECONDARY,
+            )
+        ax.margins(y=0.22)
+        ax.set_xticks(range(len(labels)))
+        ax.set_xticklabels(labels, rotation=18, ha="right", fontsize=9)
+        ax.set_title(f"{title}\n{hint}", loc="left", fontsize=10, color=INK_PRIMARY, pad=6)
+        if kind == "pct":
+            ax.yaxis.set_major_formatter(lambda value, _: f"{value:.0%}")
+
+    for ax in flat[len(available):]:
+        ax.set_visible(False)
+
+    fig.suptitle(
+        f"Perfil das partições · {dataset}",
+        x=0.01,
+        y=0.995,
+        ha="left",
+        fontsize=13,
+        color=INK_PRIMARY,
+    )
+    fig.tight_layout(rect=(0, 0, 1, 0.94))
+    return fig
+
+
 def cluster_card_figure(card: dict, *, dataset: str, granularity: str) -> Figure:
     """One cluster in depth: subcluster rates (intra) + three reference rates (extra).
 
