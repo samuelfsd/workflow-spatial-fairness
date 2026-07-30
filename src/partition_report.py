@@ -32,7 +32,14 @@ from descriptives import (
     expected_sigma_ratio,
     partition_profile,
 )
-from figures import balance_figure, close, dispersion_figure, save_figure, save_pdf_report
+from figures import (
+    balance_figure,
+    close,
+    dispersion_figure,
+    profile_figure,
+    save_figure,
+    save_pdf_report,
+)
 
 
 def _parse_list(value: str) -> tuple[str, ...]:
@@ -183,8 +190,14 @@ def main() -> None:
     profile.to_csv(args.out / f"partition_report_{dataset.name}_profile.csv", index=False)
 
     figures_dir = args.out / "figures"
-    figures = [dispersion_figure(dispersion, dataset=dataset.name)]
-    save_figure(figures[0], figures_dir / f"partition_report_{dataset.name}_dispersion")
+    # The profile leads the report: it is the figure the cap decision is read from.
+    figures = [profile_figure(profile, dataset=dataset.name)]
+    save_figure(figures[0], figures_dir / f"partition_report_{dataset.name}_profile")
+
+    dispersion_fig = dispersion_figure(dispersion, dataset=dataset.name)
+    save_figure(dispersion_fig, figures_dir / f"partition_report_{dataset.name}_dispersion")
+    figures.append(dispersion_fig)
+
     for label, frame in frames.items():
         slug = label.replace(" ", "_").replace("=", "")
         figure = balance_figure(frame, dataset=dataset.name, method=label)

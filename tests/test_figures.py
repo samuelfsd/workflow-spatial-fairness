@@ -16,6 +16,7 @@ from figures import (
     close,
     dispersion_figure,
     metric_panels_figure,
+    profile_figure,
     save_figure,
     save_pdf_report,
 )
@@ -137,6 +138,49 @@ class BalanceAndDispersionTests(unittest.TestCase):
                 self.assertNotIn(patch.get_facecolor(), reserved)
         finally:
             close(fig)
+
+    def _profile(self) -> pd.DataFrame:
+        return pd.DataFrame(
+            {
+                "config": ["hdbscan", "hdbscan cap=1000", "capped_hdbscan cap=1000"],
+                "cluster_size_cv": [1.09, 0.67, 0.76],
+                "noise_rate": [0.209, 0.801, 0.209],
+                "rho_sigma": [0.0715, 0.0712, 0.0772],
+                "raio_medio_km_mean": [25.0, 9.0, 18.0],
+            }
+        )
+
+    def test_profile_draws_one_panel_per_reading_and_one_bar_per_config(self):
+        fig = profile_figure(self._profile(), dataset="lar")
+        try:
+            visible = [ax for ax in fig.axes if ax.get_visible()]
+            self.assertEqual(len(visible), 4)
+            for ax in visible:
+                self.assertEqual(len(ax.patches), 3)
+        finally:
+            close(fig)
+
+    def test_profile_keeps_each_reading_on_its_own_axis(self):
+        # A CV and a percentage share no scale: separate panels, never a second
+        # y-axis on one panel.
+        fig = profile_figure(self._profile(), dataset="lar")
+        try:
+            for ax in fig.axes:
+                self.assertEqual(len(ax.get_shared_y_axes().get_siblings(ax)), 1)
+        finally:
+            close(fig)
+
+    def test_profile_skips_readings_the_frame_does_not_carry(self):
+        frame = self._profile()[["config", "cluster_size_cv", "noise_rate"]]
+        fig = profile_figure(frame, dataset="lar")
+        try:
+            self.assertEqual(len([ax for ax in fig.axes if ax.get_visible()]), 2)
+        finally:
+            close(fig)
+
+    def test_profile_rejects_an_empty_profile(self):
+        with self.assertRaises(ValueError):
+            profile_figure(pd.DataFrame({"config": []}), dataset="lar")
 
     def test_dispersion_draws_one_group_per_variable_and_config(self):
         from descriptives import compare_configs
