@@ -52,6 +52,23 @@ def _parse_ints(value: str) -> tuple[int, ...]:
     return tuple(int(item.strip()) for item in value.split(",") if item.strip())
 
 
+def config_label(method: str, cap: int | None) -> str:
+    """Human-readable name for a configuration — the axis label of every figure.
+
+    Deliberately not `hdbscan cap=1000`: the reader should not need to remember
+    which partitioner implements which cap mechanism. The exact method stays in
+    the `method` column of the profile CSV, so reproducibility is not lost.
+    """
+    if cap is None:
+        return "sem cap (orgânico)"
+    return f"cap nativo {cap}" if method == "hdbscan" else f"redivisão {cap}"
+
+
+def config_slug(method: str, cap: int | None) -> str:
+    """ASCII file-name fragment for a configuration."""
+    return method if cap is None else f"{method}_cap{cap}"
+
+
 def build_configs(
     df: pd.DataFrame,
     *,
@@ -59,14 +76,15 @@ def build_configs(
     min_cluster_frac: float,
     max_cluster_sizes: tuple[int, ...],
     min_samples: int,
-) -> dict[str, Partition]:
-    """Fit one partition per configuration, keyed by a human-readable label.
+) -> dict[str, tuple[Partition, str]]:
+    """Fit one partition per configuration: label -> (partition, file slug).
 
-    `hdbscan` without a cap is the organic default; with a cap it is HDBSCAN's
-    own EOM limit; `capped_hdbscan` is the recursive density split. All three are
-    the alternatives ADR-0001 weighs, so the report puts them in one table.
+    Three alternatives, which are exactly the ones ADR-0001 weighs: `hdbscan`
+    without a cap (the organic default), `hdbscan` with a cap (HDBSCAN's own EOM
+    limit — coverage drops), and `capped_hdbscan` (recursive density split —
+    coverage preserved).
     """
-    configs: dict[str, Partition] = {}
+    configs: dict[str, tuple[Partition, str]] = {}
     for method in methods:
         fit = get_partitioner(method)
         # Plain hdbscan is also reported uncapped (the organic default); the
@@ -78,21 +96,25 @@ def build_configs(
             extra: dict[str, Any] = {"min_samples": min_samples}
             if cap is not None:
                 extra["max_cluster_size"] = cap
-            label = method if cap is None else f"{method} cap={cap}"
-            configs[label] = fit(df, (min_cluster_frac,), **extra)[0]
+            partition = fit(df, (min_cluster_frac,), **extra)[0]
+            configs[config_label(method, cap)] = (partition, config_slug(method, cap))
     return configs
 
 
 def profile_table(
-    configs: dict[str, Partition],
+    configs: dict[str, tuple[Partition, str]],
     frames: dict[str, pd.DataFrame],
     *,
     n_total: int,
     global_rate: float,
 ) -> pd.DataFrame:
-    """One row per configuration: regions, unassigned share, and headline spreads."""
+    """One row per configuration: regions, unassigned share, and headline spreads.
+
+    Keeps the exact partitioner in the `method` column (from `partition_profile`)
+    so the human-readable `config` label never costs reproducibility.
+    """
     rows = []
-    for label, partition in configs.items():
+    for label, (partition, _) in configs.items():
         summary = dispersion_summary(frames[label])
         sigma_neg = summary.loc["n_neg", "std"]
         rows.append(
@@ -175,7 +197,10 @@ def main() -> None:
     if not configs:
         raise SystemExit("No partition configuration to report — check --clustering/--max-cluster-sizes.")
 
-    frames = {label: cluster_frame(dataset.df, partition, dataset.types) for label, partition in configs.items()}
+    frames = {
+        label: cluster_frame(dataset.df, partition, dataset.types)
+        for label, (partition, _) in configs.items()
+    }
     dispersion = compare_configs(frames)
     profile = profile_table(
         configs, frames, n_total=dataset.n_total, global_rate=dataset.global_rate
@@ -199,7 +224,7 @@ def main() -> None:
     figures.append(dispersion_fig)
 
     for label, frame in frames.items():
-        slug = label.replace(" ", "_").replace("=", "")
+        slug = configs[label][1]
         figure = balance_figure(frame, dataset=dataset.name, method=label)
         save_figure(figure, figures_dir / f"partition_report_{dataset.name}_balance_{slug}")
         figures.append(figure)
