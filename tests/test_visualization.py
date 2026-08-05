@@ -64,6 +64,27 @@ class VisualizationTests(unittest.TestCase):
             self.assertTrue(output_path.exists())
             self.assertGreater(output_path.stat().st_size, 0)
 
+    def test_cluster_origin_is_declared_in_stage_tooltips(self):
+        df, types = _tiny_dataset()
+        partition = Partition(
+            method="hdbscan_rescue",
+            params={},
+            labels=np.array([0, 0, 0, 1, 1, 1, -1]),
+            regions=[
+                {"points": [0, 1, 2], "cluster_label": 0, "origin": "organic"},
+                {"points": [3, 4, 5], "cluster_label": 1, "origin": "rescue"},
+            ],
+            noise_points=[6],
+        )
+
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            output_path = Path(tmp_dir) / "stage1.html"
+            save_clustering_stage_map(df, types, partition, output_path)
+            html = output_path.read_text(encoding="utf-8")
+
+        self.assertIn("origin=organic", html)
+        self.assertIn("origin=rescue", html)
+
     def test_detection_stage_map_writes_html_with_status_colors(self):
         df, types = _tiny_dataset()
         region_results = [

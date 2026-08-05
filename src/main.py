@@ -21,6 +21,13 @@ def _parse_metrics(value: str) -> tuple[str, ...]:
     return tuple(item.strip() for item in value.split(",") if item.strip())
 
 
+def _parse_ints(value: str) -> tuple[int, ...]:
+    try:
+        return tuple(int(item.strip()) for item in value.split(",") if item.strip())
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError("Expected comma-separated integers, e.g. 60,30,15") from exc
+
+
 def _add_common_args(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--out", type=Path, default=Path("outputs"), help="Output directory.")
     parser.add_argument("--maps", action="store_true", help="Generate Folium HTML maps.")
@@ -52,8 +59,21 @@ def _add_common_args(parser: argparse.ArgumentParser) -> None:
         type=int,
         default=None,
         help="Máx. de pontos por cluster (limite nativo EOM do HDBSCAN, orgânico). "
-        "Se omitido: sem cap, distribuição orgânica atual. Experimental (ADR-0001). "
+        "Mecanismo rejeitado como método, mantido para regenerar a evidência do ADR-0001. "
         "Com --clustering capped_hdbscan usa split recursivo por densidade em vez do EOM.",
+    )
+    parser.add_argument(
+        "--rescue-min-samples",
+        type=_parse_ints,
+        default=(60, 30, 15),
+        help="Comma-separated min_samples sweep for the hdbscan_rescue second pass.",
+    )
+    parser.add_argument(
+        "--stat-cap",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Apply the statistical cap after organic + rescue clustering "
+        "(--no-stat-cap isolates the rescue effect).",
     )
     parser.set_defaults(maps=False)
 
@@ -69,6 +89,8 @@ def _runner(args: argparse.Namespace) -> ExperimentRunner:
         clustering_method=args.clustering,
         hdbscan_min_samples=args.hdbscan_min_samples,
         max_cluster_size=args.max_cluster_size,
+        rescue_min_samples=args.rescue_min_samples,
+        stat_cap=args.stat_cap,
     )
 
 

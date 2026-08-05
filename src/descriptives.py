@@ -20,7 +20,10 @@ import numpy as np
 import pandas as pd
 
 from clustering.base import Partition
+from metrics.base import MetricContext
 from metrics.group_fairness import calculate_gini, get_simple_stats
+from metrics.neighbors import build_delaunay_adjacency
+from metrics.registry import get_metric
 
 EARTH_RADIUS_KM = 6371.0088
 
@@ -70,6 +73,10 @@ def cluster_frame(df: pd.DataFrame, partition: Partition, types: np.ndarray) -> 
         rows.append(
             {
                 "cluster_label": region.get("cluster_label"),
+                "origin": region.get("origin", "organic"),
+                "origin_cluster_label": region.get(
+                    "origin_cluster_label", region.get("cluster_label")
+                ),
                 "n": n,
                 "p": p,
                 "n_neg": n - p,
@@ -81,7 +88,17 @@ def cluster_frame(df: pd.DataFrame, partition: Partition, types: np.ndarray) -> 
 
     return pd.DataFrame(
         rows,
-        columns=["cluster_label", "n", "p", "n_neg", "rho", "raio_medio_km", "raio_p95_km"],
+        columns=[
+            "cluster_label",
+            "origin",
+            "origin_cluster_label",
+            "n",
+            "p",
+            "n_neg",
+            "rho",
+            "raio_medio_km",
+            "raio_p95_km",
+        ],
     )
 
 
@@ -180,16 +197,139 @@ def partition_profile(partition: Partition, n_total: int) -> dict[str, Any]:
     behind while the cluster as a whole did split. Both are findings under
     ADR-0001, not failures to hide.
     """
+    organic_n = sum(
+        len(region["points"])
+        for region in partition.regions
+        if region.get("origin", "organic") == "organic"
+    )
+    rescue_n = sum(
+        len(region["points"])
+        for region in partition.regions
+        if region.get("origin", "organic") == "rescue"
+    )
     return {
         "method": partition.method,
         "n_regions": len(partition.regions),
+        "organic_n": organic_n,
+        "organic_rate": (organic_n / n_total) if n_total else float("nan"),
+        "rescue_n": rescue_n,
+        "rescue_rate": (rescue_n / n_total) if n_total else float("nan"),
+        "assigned_n": organic_n + rescue_n,
+        "coverage_rate": ((organic_n + rescue_n) / n_total) if n_total else float("nan"),
         "noise_n": partition.noise_n,
         "noise_rate": (partition.noise_n / n_total) if n_total else float("nan"),
         "forced_uncapped": sum(
             1 for region in partition.regions if region.get("forced_uncapped")
         ),
         "over_cap": sum(1 for region in partition.regions if region.get("over_cap")),
+        "stat_cap_targets": int(partition.params.get("stat_cap_targets", 0)),
+        "stat_cap_refusals": int(partition.params.get("stat_cap_refusals", 0)),
+        "cluster_size_cv_before_stat_cap": partition.params.get(
+            "cluster_size_cv_before_stat_cap"
+        ),
+        "cluster_size_cv_after_stat_cap": partition.params.get(
+            "cluster_size_cv_after_stat_cap"
+        ),
     }
+
+
+def _partition_before_stat_cap(
+    partition: Partition,
+    *,
+    n_total: int,
+    include_rescue: bool,
+) -> Partition:
+    """Reassemble origin-parent clusters from a final rescue partition."""
+    grouped: dict[tuple[str, int], list[int]] = {}
+    for region in partition.regions:
+        origin = str(region.get("origin", "organic"))
+        if origin == "rescue" and not include_rescue:
+            continue
+        parent = int(region.get("origin_cluster_label", region.get("cluster_label", -1)))
+        grouped.setdefault((origin, parent), []).extend(int(point) for point in region["points"])
+
+    labels = np.full(n_total, -1, dtype=int)
+    regions = []
+    for label, ((origin, parent), points) in enumerate(grouped.items()):
+        unique_points = sorted(set(points))
+        labels[unique_points] = label
+        regions.append(
+            {
+                "points": unique_points,
+                "cluster_label": label,
+                "origin": origin,
+                "origin_cluster_label": parent,
+            }
+        )
+    return Partition(
+        method=f"{partition.method}_before_stat_cap",
+        params={},
+        labels=labels,
+        regions=regions,
+        noise_points=np.flatnonzero(labels == -1).astype(int).tolist(),
+    )
+
+
+def organic_local_z_deltas(
+    partition: Partition,
+    df: pd.DataFrame,
+    types: np.ndarray,
+    *,
+    n_total: int,
+    p_total: int,
+) -> pd.DataFrame:
+    """Local-z change on organic clusters caused only by adding rescue peers.
+
+    Origin-parent labels reconstruct both comparison partitions before the
+    statistical cap: organic-only and organic+rescue. This isolates the graph
+    perturbation from the later density redivision.
+    """
+    organic = _partition_before_stat_cap(
+        partition, n_total=n_total, include_rescue=False
+    )
+    combined = _partition_before_stat_cap(
+        partition, n_total=n_total, include_rescue=True
+    )
+
+    def scores_by_parent(candidate: Partition) -> dict[tuple[str, int], float]:
+        adjacency = build_delaunay_adjacency(candidate, df)
+        ctx = MetricContext(
+            n_total=n_total,
+            p_total=p_total,
+            adjacency=adjacency,
+            rng=np.random.default_rng(0),
+        )
+        scores = get_metric("local_z")(candidate, types, ctx).per_cluster
+        return {
+            (
+                str(region.get("origin", "organic")),
+                int(region["origin_cluster_label"]),
+            ): float(scores[idx])
+            for idx, region in enumerate(candidate.regions)
+        }
+
+    before = scores_by_parent(organic)
+    after = scores_by_parent(combined)
+    rows = []
+    for (origin, parent), value_before in before.items():
+        value_after = after.get((origin, parent), float("nan"))
+        rows.append(
+            {
+                "origin_cluster_label": parent,
+                "local_z_before_rescue": value_before,
+                "local_z_after_rescue": value_after,
+                "local_z_delta": value_after - value_before,
+            }
+        )
+    return pd.DataFrame(
+        rows,
+        columns=[
+            "origin_cluster_label",
+            "local_z_before_rescue",
+            "local_z_after_rescue",
+            "local_z_delta",
+        ],
+    )
 
 
 def subcluster_frame(points: list[int], types: np.ndarray, splitter: Splitter) -> pd.DataFrame:

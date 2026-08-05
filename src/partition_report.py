@@ -10,7 +10,7 @@ No Monte Carlo, so it runs in seconds and can be regenerated freely.
 
 Usage:
     uv run python src/partition_report.py --dataset lar --min-cluster-frac 0.005 \
-        --clustering hdbscan,capped_hdbscan --max-cluster-sizes 1000,2000 --out outputs
+        --clustering hdbscan,hdbscan_rescue --rescue-min-samples 60,30,15 --out outputs
 """
 
 from __future__ import annotations
@@ -19,6 +19,7 @@ import argparse
 from pathlib import Path
 from typing import Any
 
+import numpy as np
 import pandas as pd
 
 from clustering.base import Partition
@@ -31,6 +32,7 @@ from descriptives import (
     dataset_balance,
     dispersion_summary,
     expected_sigma_ratio,
+    organic_local_z_deltas,
     partition_profile,
 )
 from figures import (
@@ -53,7 +55,12 @@ def _parse_ints(value: str) -> tuple[int, ...]:
     return tuple(int(item.strip()) for item in value.split(",") if item.strip())
 
 
-def config_label(method: str, cap: int | None) -> str:
+def config_label(
+    method: str,
+    cap: int | None,
+    rescue_samples: int | None = None,
+    stat_cap: bool = True,
+) -> str:
     """Human-readable name for a configuration — the axis label of every figure.
 
     Deliberately not `hdbscan cap=1000`: the reader should not need to remember
@@ -63,14 +70,25 @@ def config_label(method: str, cap: int | None) -> str:
     "Teto cumprido" reading is what reports that per dataset. The exact
     partitioner stays in the `method` column of the profile CSV.
     """
+    if method == "hdbscan_rescue":
+        suffix = " + cap estatístico" if stat_cap else ""
+        return f"resgate min_samples={rescue_samples}{suffix}"
     if cap is None:
         return "sem cap (orgânico)"
     mechanism = "cap nativo" if method == "hdbscan" else "redivisão"
     return f"{mechanism} (teto {cap})"
 
 
-def config_slug(method: str, cap: int | None) -> str:
+def config_slug(
+    method: str,
+    cap: int | None,
+    rescue_samples: int | None = None,
+    stat_cap: bool = True,
+) -> str:
     """ASCII file-name fragment for a configuration."""
+    if method == "hdbscan_rescue":
+        suffix = "_statcap" if stat_cap else ""
+        return f"hdbscan_rescue_ms{rescue_samples}{suffix}"
     return method if cap is None else f"{method}_cap{cap}"
 
 
@@ -81,16 +99,17 @@ def build_configs(
     min_cluster_frac: float,
     max_cluster_sizes: tuple[int, ...],
     min_samples: int,
+    rescue_min_samples: tuple[int, ...] = (60, 30, 15),
+    stat_cap: bool = True,
 ) -> tuple[dict[str, tuple[Partition, str, int | None]], list[str]]:
     """Fit one partition per configuration, plus the list of skipped ones.
 
     Returns `label -> (partition, file slug, cap)` and a list of human-readable
     reasons for configurations that were **not** fitted.
 
-    Three alternatives, which are exactly the ones ADR-0001 weighs: `hdbscan`
-    without a cap (the organic default), `hdbscan` with a cap (HDBSCAN's own EOM
-    limit — coverage drops), and `capped_hdbscan` (recursive density split —
-    coverage preserved).
+    The default comparison is the organic `hdbscan` against the experimental
+    `hdbscan_rescue` sweep. The two absolute-cap mechanisms remain callable only
+    to regenerate the negative evidence recorded by ADR-0001.
 
     A cap at or below `effective_min_cluster_size` is **arithmetically
     impossible** — it asks for clusters both smaller and larger than the same
@@ -104,6 +123,23 @@ def build_configs(
 
     for method in methods:
         fit = get_partitioner(method)
+        if method == "hdbscan_rescue":
+            partitions = fit(
+                df,
+                (min_cluster_frac,),
+                min_samples=min_samples,
+                rescue_min_samples=rescue_min_samples,
+                stat_cap=stat_cap,
+            )
+            for partition in partitions:
+                rescue_samples = int(partition.params["rescue_min_samples"])
+                label = config_label(method, None, rescue_samples, stat_cap)
+                configs[label] = (
+                    partition,
+                    config_slug(method, None, rescue_samples, stat_cap),
+                    None,
+                )
+            continue
         # Plain hdbscan is also reported uncapped (the organic default); the
         # recursive split has no meaning without a cap, so it is cap-only.
         caps: tuple[int | None, ...] = (
@@ -145,6 +181,13 @@ def profile_table(
         frame = frames[label]
         summary = dispersion_summary(frame)
         sigma_neg = summary.loc["n_neg", "std"]
+        origins = (
+            frame["origin"]
+            if "origin" in frame.columns
+            else pd.Series("organic", index=frame.index)
+        )
+        organic = frame[origins == "organic"]
+        rescue = frame[origins == "rescue"]
         rows.append(
             {
                 "config": label,
@@ -158,6 +201,10 @@ def profile_table(
                 "cluster_size_max": summary.loc["n", "max"],
                 "rho_sigma": summary.loc["rho", "std"],
                 "raio_medio_km_mean": summary.loc["raio_medio_km", "mean"],
+                "organic_raio_medio_km_mean": organic["raio_medio_km"].mean(),
+                "organic_raio_p95_km_mean": organic["raio_p95_km"].mean(),
+                "rescue_raio_medio_km_mean": rescue["raio_medio_km"].mean(),
+                "rescue_raio_p95_km_mean": rescue["raio_p95_km"].mean(),
                 "sigma_ratio_p_over_neg": (
                     summary.loc["p", "std"] / sigma_neg if sigma_neg else float("nan")
                 ),
@@ -179,6 +226,17 @@ def markdown_table(profile: pd.DataFrame) -> str:
         ("σ(p)/σ(neg) observado", "sigma_ratio_p_over_neg", "{:.2f}"),
         ("σ(p)/σ(neg) esperado", "sigma_ratio_expected", "{:.2f}"),
         ("Não atribuídos", "noise_rate", "{:.1%}"),
+        ("Cobertura orgânica", "organic_rate", "{:.1%}"),
+        ("Cobertura de resgate", "rescue_rate", "{:.1%}"),
+        ("Raio médio orgânico (km)", "organic_raio_medio_km_mean", "{:.1f}"),
+        ("Raio médio de resgate (km)", "rescue_raio_medio_km_mean", "{:.1f}"),
+        ("Alvos do cap estatístico", "stat_cap_targets", "{:.0f}"),
+        ("Recusas do cap estatístico", "stat_cap_refusals", "{:.0f}"),
+        ("CV antes do cap estatístico", "cluster_size_cv_before_stat_cap", "{:.2f}"),
+        ("CV depois do cap estatístico", "cluster_size_cv_after_stat_cap", "{:.2f}"),
+        ("Clusters orgânicos com Δz", "local_z_delta_evaluated", "{:.0f}"),
+        ("Δz médio em módulo", "local_z_delta_mean_abs", "{:.2f}"),
+        ("Δz máximo em módulo", "local_z_delta_max_abs", "{:.2f}"),
         ("**Teto cumprido**", "cap_compliance", "{:.0%}"),
         ("Clusters acima do teto", "over_cap", "{:.0f}"),
         ("Divisões forçadas", "forced_uncapped", "{:.0f}"),
@@ -191,7 +249,7 @@ def markdown_table(profile: pd.DataFrame) -> str:
     for title, column, fmt in rows:
         cells = []
         for _, row in profile.iterrows():
-            value = row[column]
+            value = row.get(column, float("nan"))
             cells.append("—" if pd.isna(value) else fmt.format(value))
         lines.append(f"| {title} | " + " | ".join(cells) + " |")
     return "\n".join(lines)
@@ -205,16 +263,23 @@ def main() -> None:
     parser.add_argument(
         "--clustering",
         type=_parse_list,
-        default=("hdbscan", "capped_hdbscan"),
+        default=("hdbscan", "hdbscan_rescue"),
         help=f"Comma-separated partitioners to compare. Available: {partitioner_names()}",
     )
     parser.add_argument(
         "--max-cluster-sizes",
         type=_parse_ints,
-        default=(1000, 2000),
-        help="Comma-separated size caps to sweep (ADR-0001). Empty = no cap at all.",
+        default=(),
+        help="Legacy absolute size caps to regenerate ADR-0001 evidence. "
+        "Excluded from comparisons by default.",
     )
     parser.add_argument("--hdbscan-min-samples", type=int, default=60)
+    parser.add_argument(
+        "--rescue-min-samples", type=_parse_ints, default=(60, 30, 15)
+    )
+    parser.add_argument(
+        "--stat-cap", action=argparse.BooleanOptionalAction, default=True
+    )
     args = parser.parse_args()
 
     dataset = load_dataset(args.dataset)
@@ -229,6 +294,8 @@ def main() -> None:
         min_cluster_frac=args.min_cluster_frac,
         max_cluster_sizes=args.max_cluster_sizes,
         min_samples=args.hdbscan_min_samples,
+        rescue_min_samples=args.rescue_min_samples,
+        stat_cap=args.stat_cap,
     )
     for reason in skipped:
         print(f"  ⚠ pulada — {reason}")
@@ -242,10 +309,39 @@ def main() -> None:
         label: cluster_frame(dataset.df, partition, dataset.types)
         for label, (partition, _, _) in configs.items()
     }
+    delta_summaries: dict[str, tuple[int, float, float]] = {}
+    for label, (partition, _, _) in configs.items():
+        if partition.method != "hdbscan_rescue":
+            continue
+        deltas = organic_local_z_deltas(
+            partition,
+            dataset.df,
+            dataset.types,
+            n_total=dataset.n_total,
+            p_total=dataset.p_total,
+        )
+        frames[label] = frames[label].merge(
+            deltas, on="origin_cluster_label", how="left"
+        )
+        finite = deltas["local_z_delta"].dropna().to_numpy(dtype=float)
+        delta_summaries[label] = (
+            len(finite),
+            float(np.mean(np.abs(finite))) if len(finite) else float("nan"),
+            float(np.max(np.abs(finite))) if len(finite) else float("nan"),
+        )
     dispersion = compare_configs(frames)
     profile = profile_table(
         configs, frames, n_total=dataset.n_total, global_rate=dataset.global_rate
     )
+    profile["local_z_delta_evaluated"] = 0
+    profile["local_z_delta_mean_abs"] = np.nan
+    profile["local_z_delta_max_abs"] = np.nan
+    for idx, row in profile.iterrows():
+        if row["config"] in delta_summaries:
+            evaluated, mean_abs, max_abs = delta_summaries[row["config"]]
+            profile.loc[idx, "local_z_delta_evaluated"] = evaluated
+            profile.loc[idx, "local_z_delta_mean_abs"] = mean_abs
+            profile.loc[idx, "local_z_delta_max_abs"] = max_abs
 
     args.out.mkdir(parents=True, exist_ok=True)
     clusters = pd.concat(

@@ -31,6 +31,7 @@ def fit_hdbscan_partition(
     min_cluster_size_min: int = 25,
     min_samples: int = 60,
     max_cluster_size: int | None = None,
+    min_cluster_size_override: int | None = None,
 ) -> Partition:
     """Fit one HDBSCAN partition using haversine distance on lat/lon.
 
@@ -44,9 +45,34 @@ def fit_hdbscan_partition(
     hierarchy to smaller sub-clusters instead — an *organic* cap (no geometric
     split). Points that fall between selected clusters become unassigned, so a
     tighter cap tends to raise the noise fraction. See ADR-0001.
+
+    `min_cluster_size_override` preserves an absolute region-size ruler when a
+    subset is fitted. The rescue pass uses it so ``frac × N`` from the full
+    dataset does not silently become ``frac × noise_n``.
     """
-    min_cluster_size = effective_min_cluster_size(len(df), min_cluster_frac, min_cluster_size_min)
+    min_cluster_size = (
+        int(min_cluster_size_override)
+        if min_cluster_size_override is not None
+        else effective_min_cluster_size(len(df), min_cluster_frac, min_cluster_size_min)
+    )
+    if min_cluster_size < 2:
+        raise ValueError("min_cluster_size must be at least 2")
     effective_min_samples = min(min_samples, min_cluster_size)
+    if len(df) < min_cluster_size:
+        labels = np.full(len(df), -1, dtype=int)
+        return Partition(
+            method="hdbscan",
+            params={
+                "min_cluster_frac": float(min_cluster_frac),
+                "min_cluster_size": int(min_cluster_size),
+                "min_samples": int(effective_min_samples),
+                "max_cluster_size": max_cluster_size,
+                "metric": "haversine",
+            },
+            labels=labels,
+            regions=[],
+            noise_points=list(range(len(df))),
+        )
     coords = np.radians(df[["lat", "lon"]].to_numpy(dtype=float))
 
     clusterer = HDBSCAN(
