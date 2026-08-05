@@ -18,6 +18,7 @@ from descriptives import (
     dataset_balance,
     dispersion_summary,
     expected_sigma_ratio,
+    organic_local_z_deltas,
     partition_profile,
     peer_rate,
     standardized_residuals,
@@ -87,6 +88,18 @@ class ClusterFrameTests(unittest.TestCase):
         equator = cluster_frame(_df([(0.0, 0.0), (0.0, 1.0)]), _partition([[0, 1]], 2), types)
         north = cluster_frame(_df([(60.0, 0.0), (60.0, 1.0)]), _partition([[0, 1]], 2), types)
         self.assertLess(north["raio_medio_km"].iloc[0], equator["raio_medio_km"].iloc[0])
+
+    def test_cluster_origin_is_preserved_for_coverage_and_compactness_reports(self):
+        types = np.array([1, 0, 1, 0])
+        df = _df([(0.0, 0.0), (0.1, 0.0), (1.0, 1.0), (1.1, 1.0)])
+        partition = _partition([[0, 1], [2, 3]], 4)
+        partition.regions[0]["origin"] = "organic"
+        partition.regions[1]["origin"] = "rescue"
+
+        frame = cluster_frame(df, partition, types)
+
+        self.assertEqual(list(frame["origin"]), ["organic", "rescue"])
+        self.assertTrue(frame["raio_medio_km"].notna().all())
 
 
 class DispersionTests(unittest.TestCase):
@@ -171,6 +184,21 @@ class ReadingHelpersTests(unittest.TestCase):
         self.assertEqual(profile["forced_uncapped"], 0)
         self.assertEqual(profile["over_cap"], 0)
 
+    def test_partition_profile_decomposes_organic_rescue_and_unassigned_coverage(self):
+        partition = _partition([[0, 1], [2, 3, 4]], 6, noise=[5])
+        partition.regions[0]["origin"] = "organic"
+        partition.regions[1]["origin"] = "rescue"
+
+        profile = partition_profile(partition, n_total=6)
+
+        self.assertEqual(profile["organic_n"], 2)
+        self.assertEqual(profile["rescue_n"], 3)
+        self.assertEqual(profile["noise_n"], 1)
+        self.assertAlmostEqual(
+            profile["organic_rate"] + profile["rescue_rate"] + profile["noise_rate"],
+            1.0,
+        )
+
     def test_partition_profile_counts_forced_splits(self):
         partition = _partition([[0, 1], [2, 3]], 4)
         partition.regions[0]["forced_uncapped"] = True
@@ -184,6 +212,30 @@ class ReadingHelpersTests(unittest.TestCase):
         profile = partition_profile(partition, n_total=4)
         self.assertEqual(profile["over_cap"], 1)
         self.assertEqual(profile["forced_uncapped"], 0)
+
+    def test_organic_local_z_delta_is_zero_when_no_rescue_cluster_was_added(self):
+        coords = [
+            (0.0, 0.0), (0.01, 0.0),
+            (0.0, 1.0), (0.01, 1.0),
+            (1.0, 0.0), (1.01, 0.0),
+            (1.0, 1.0), (1.01, 1.0),
+        ]
+        types = np.array([1, 0] * 4)
+        partition = _partition([[0, 1], [2, 3], [4, 5], [6, 7]], 8)
+        for region in partition.regions:
+            region["origin"] = "organic"
+            region["origin_cluster_label"] = region["cluster_label"]
+
+        deltas = organic_local_z_deltas(
+            partition,
+            _df(coords),
+            types,
+            n_total=8,
+            p_total=4,
+        )
+
+        self.assertEqual(len(deltas), 4)
+        np.testing.assert_allclose(deltas["local_z_delta"], 0.0)
 
 
 class ClusterCardTests(unittest.TestCase):

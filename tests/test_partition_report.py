@@ -91,6 +91,22 @@ class BuildConfigsTests(unittest.TestCase):
         )
         self.assertEqual(configs, {})
 
+    def test_rescue_configurations_are_named_by_the_density_axis(self):
+        df = _two_blob_df()
+        configs, skipped = build_configs(
+            df,
+            methods=("hdbscan_rescue",),
+            min_cluster_frac=0.1,
+            max_cluster_sizes=(),
+            min_samples=5,
+            rescue_min_samples=(5,),
+            stat_cap=False,
+        )
+
+        self.assertEqual(skipped, [])
+        self.assertIn("resgate min_samples=5", configs)
+        self.assertEqual(configs["resgate min_samples=5"][0].method, "hdbscan_rescue")
+
 
 class ProfileTableTests(unittest.TestCase):
     def _configs_and_frames(self, cap):
@@ -135,6 +151,20 @@ class ProfileTableTests(unittest.TestCase):
         table = markdown_table(profile)
         self.assertIn("Teto cumprido", table)
         self.assertIn("—", table)
+
+    def test_profile_reports_coverage_and_compactness_by_cluster_origin(self):
+        configs, frames, label = self._configs_and_frames(cap=None)
+        partition = configs[label][0]
+        partition.regions[0]["origin"] = "organic"
+        partition.regions[1]["origin"] = "rescue"
+        frames[label]["origin"] = ["organic", "rescue"]
+
+        profile = profile_table(configs, frames, n_total=5, global_rate=0.6)
+
+        self.assertAlmostEqual(profile.loc[0, "organic_rate"], 3 / 5)
+        self.assertAlmostEqual(profile.loc[0, "rescue_rate"], 2 / 5)
+        self.assertAlmostEqual(profile.loc[0, "organic_raio_medio_km_mean"], 1.0)
+        self.assertAlmostEqual(profile.loc[0, "rescue_raio_p95_km_mean"], 2.0)
 
 
 if __name__ == "__main__":

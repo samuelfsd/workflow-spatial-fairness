@@ -133,7 +133,8 @@ def _add_hdbscan_hull(mapit: folium.Map, df: pd.DataFrame, types: np.ndarray, re
     p = int(types[point_ids].sum())
     rho = p / n if n else 0.0
     label = region.get("cluster_label", "?")
-    tooltip = f"HDBSCAN cluster={label}, n={n}, p={p}, rho={rho:.3f}"
+    origin = region.get("origin", "organic")
+    tooltip = f"HDBSCAN cluster={label}, origin={origin}, n={n}, p={p}, rho={rho:.3f}"
     _add_region_hull(mapit, df, region, color, tooltip)
 
 
@@ -215,7 +216,8 @@ def save_clustering_stage_map(
         n, label = len(region["points"]), region.get("cluster_label", "?")
         p = int(types[region["points"]].sum()) if n else 0
         rho = p / n if n else 0.0
-        tooltip = f"cluster={label}, n={n}, p={p}, rho={rho:.3f}"
+        origin = region.get("origin", "organic")
+        tooltip = f"cluster={label}, origin={origin}, n={n}, p={p}, rho={rho:.3f}"
         _add_region_hull(clusters_group, df, region, _CLUSTER_PALETTE[0], tooltip, fill_opacity=0.08)
     clusters_group.add_to(mapit)
 
@@ -251,10 +253,12 @@ def save_detection_stage_map(
         key = result["direction"] if result["significant"] else "neutral"
         status = f"SIGNIFICANT ({result['direction']})" if result["significant"] else "not significant"
         label = result["region"].get("cluster_label", "?")
+        origin = result["region"].get("origin", "organic")
         score = result.get("score", result.get("sul"))
         score_name = result.get("score_name", "SUL")
         tooltip = (
-            f"cluster={label} | {score_name}={score:.2f} (limiar={threshold:.2f}) | "
+            f"cluster={label} | origin={origin} | "
+            f"{score_name}={score:.2f} (limiar={threshold:.2f}) | "
             f"n={result['n']}, p={result['p']} | "
             f"rho_in={result['rho']:.3f} vs rho_out={result['rho_out']:.3f} "
             f"(global={global_rate:.3f}) | {status}"

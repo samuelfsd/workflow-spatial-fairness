@@ -23,6 +23,7 @@ from descriptives import (
     dataset_balance,
     dispersion_summary,
     expected_sigma_ratio,
+    organic_local_z_deltas,
     partition_profile,
 )
 from figures import (
@@ -133,6 +134,8 @@ class ExperimentRunner:
         clustering_method: str = "hdbscan",
         hdbscan_min_samples: int = 60,
         max_cluster_size: int | None = None,
+        rescue_min_samples: tuple[int, ...] = (60, 30, 15),
+        stat_cap: bool = True,
     ) -> None:
         self.out_dir = out_dir
         self.maps = maps
@@ -140,6 +143,8 @@ class ExperimentRunner:
         self.hdbscan_fracs = hdbscan_fracs
         self.hdbscan_min_samples = hdbscan_min_samples
         self.max_cluster_size = max_cluster_size
+        self.rescue_min_samples = rescue_min_samples
+        self.stat_cap = stat_cap
         self.max_map_points = max_map_points
         self.verbose = verbose
         self.clustering_method = clustering_method
@@ -182,11 +187,14 @@ class ExperimentRunner:
         key = (dataset.name, method)
         if key not in self.partition_cache:
             partitions = []
-            if method in ("hdbscan", "capped_hdbscan"):
+            if method in ("hdbscan", "capped_hdbscan", "hdbscan_rescue"):
                 for idx, frac in enumerate(self.hdbscan_fracs, start=1):
                     extra: dict[str, Any] = {"min_samples": self.hdbscan_min_samples}
                     if method == "capped_hdbscan":
                         extra["max_cluster_size"] = self.max_cluster_size or 2000
+                    elif method == "hdbscan_rescue":
+                        extra["rescue_min_samples"] = self.rescue_min_samples
+                        extra["stat_cap"] = self.stat_cap
                     elif self.max_cluster_size:  # native HDBSCAN EOM cap
                         extra["max_cluster_size"] = self.max_cluster_size
                     with self.timed_step(f"Clustering ({method}) {idx}/{len(self.hdbscan_fracs)} frac={frac}"):
@@ -553,11 +561,18 @@ class ExperimentRunner:
             dataset = self.load(dataset_name)
 
         with self.timed_step(f"[2/5] Clustering ({method})"):
-            if min_cluster_frac is not None and method in ("hdbscan", "capped_hdbscan"):
+            if min_cluster_frac is not None and method in (
+                "hdbscan",
+                "capped_hdbscan",
+                "hdbscan_rescue",
+            ):
                 fit = get_partitioner(method)
                 extra: dict[str, Any] = {"min_samples": self.hdbscan_min_samples}
                 if method == "capped_hdbscan":
                     extra["max_cluster_size"] = self.max_cluster_size or 2000
+                elif method == "hdbscan_rescue":
+                    extra["rescue_min_samples"] = self.rescue_min_samples
+                    extra["stat_cap"] = self.stat_cap
                 elif self.max_cluster_size:
                     extra["max_cluster_size"] = self.max_cluster_size
                 candidates = fit(dataset.df, (min_cluster_frac,), **extra)
@@ -611,6 +626,21 @@ class ExperimentRunner:
             _, meanvar_max, _, rhos = _meanvar_summary(partition.regions, dataset.types)
             meanvar = calculate_meanvar(rhos)
             gini = calculate_gini(rhos)
+            organic_z_deltas = (
+                organic_local_z_deltas(
+                    partition,
+                    dataset.df,
+                    dataset.types,
+                    n_total=dataset.n_total,
+                    p_total=dataset.p_total,
+                ).to_dict("records")
+                if method == "hdbscan_rescue"
+                else []
+            )
+            delta_by_parent = {
+                int(row["origin_cluster_label"]): float(row["local_z_delta"])
+                for row in organic_z_deltas
+            }
 
         with self.timed_step(f"[5/5] Monte Carlo ({n_alt_worlds} worlds) + detection outputs"):
             thresholds: dict[str, float | None] = {}
@@ -673,6 +703,11 @@ class ExperimentRunner:
                     "score_name": primary_metric,
                     "significant": significant,
                     "direction": direction,
+                    "local_z_delta_after_rescue": (
+                        delta_by_parent.get(int(region.get("origin_cluster_label", -1)))
+                        if region.get("origin", "organic") == "organic"
+                        else None
+                    ),
                 }
                 for name in metric_list:
                     row[f"metric_{name}"] = float(results[name].per_cluster[idx])
@@ -745,6 +780,7 @@ class ExperimentRunner:
                 [
                     {
                         "cluster_label": item["region"].get("cluster_label"),
+                        "origin": item["region"].get("origin", "organic"),
                         "n": item["n"],
                         "p": item["p"],
                         "n_neg": item["n_neg"],
@@ -756,6 +792,9 @@ class ExperimentRunner:
                         "analytic_threshold": analytic_thresholds.get(primary_metric),
                         "significant": item["significant"],
                         "direction": item["direction"],
+                        "local_z_delta_after_rescue": item[
+                            "local_z_delta_after_rescue"
+                        ],
                         **{name: item[f"metric_{name}"] for name in metric_list},
                     }
                     for item in region_results
@@ -778,6 +817,12 @@ class ExperimentRunner:
                 ).to_csv(self.out_dir / f"explain_{dataset.name}_null_distribution.csv", index=False)
 
             significant = [item for item in region_results if item["significant"]]
+            finite_deltas = [
+                row["local_z_delta"]
+                for row in organic_z_deltas
+                if not math.isnan(row["local_z_delta"])
+            ]
+            profile_values = partition_profile(partition, dataset.n_total)
             summary = {
                 "dataset": dataset.name,
                 "method": method,
@@ -788,6 +833,30 @@ class ExperimentRunner:
                 "n_regions": len(partition.regions),
                 "noise_n": partition.noise_n,
                 "noise_rate": partition.noise_n / dataset.n_total if dataset.n_total else None,
+                "coverage": {
+                    "organic_n": profile_values["organic_n"],
+                    "organic_rate": _safe_float(profile_values["organic_rate"]),
+                    "rescue_n": profile_values["rescue_n"],
+                    "rescue_rate": _safe_float(profile_values["rescue_rate"]),
+                    "noise_n": profile_values["noise_n"],
+                    "noise_rate": _safe_float(profile_values["noise_rate"]),
+                },
+                "organic_local_z_delta": {
+                    "evaluated_clusters": len(finite_deltas),
+                    "mean_abs": (
+                        float(np.mean(np.abs(finite_deltas))) if finite_deltas else None
+                    ),
+                    "max_abs": (
+                        float(np.max(np.abs(finite_deltas))) if finite_deltas else None
+                    ),
+                    "clusters": [
+                        {
+                            key: (_safe_float(value) if key != "origin_cluster_label" else value)
+                            for key, value in row.items()
+                        }
+                        for row in organic_z_deltas
+                    ],
+                },
                 "n_alt_worlds": n_alt_worlds,
                 "signif_level": signif_level,
                 "elapsed_seconds": round(time.perf_counter() - run_started, 1),
@@ -801,7 +870,7 @@ class ExperimentRunner:
                     name: _safe_float(results[name].partition_scalar) for name in metric_list
                 },
                 "balance": dataset_balance(dataset.types),
-                "partition_profile": partition_profile(partition, dataset.n_total),
+                "partition_profile": profile_values,
                 "cluster_size_cv": _safe_float(dispersion.loc["n", "cv"]),
                 "rho_sigma": _safe_float(dispersion.loc["rho", "std"]),
                 "sigma_ratio_positives_over_negatives": _safe_float(
