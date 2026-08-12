@@ -368,7 +368,12 @@ def cluster_card_figure(card: dict, *, dataset: str, granularity: str) -> Figure
     4.000-point pocket are not the same news. The Gini is the caption, not the
     chart — a cluster's Gini is a single number.
     """
-    subclusters = card["subclusters"].sort_values("rho", ascending=True).reset_index(drop=True)
+    components = card["subclusters"]
+    subclusters = (
+        components[components["component"] == "subcluster"]
+        .sort_values("rho", ascending=True)
+        .reset_index(drop=True)
+    )
     fig, ax = _new_figure()
 
     positions = range(len(subclusters))
@@ -407,7 +412,8 @@ def cluster_card_figure(card: dict, *, dataset: str, granularity: str) -> Figure
     ax.set_xlabel("subcluster (ordenado pela taxa)")
     ax.set_xticks(list(positions))
     ax.set_xticklabels([str(idx) for idx in subclusters["subcluster"]])
-    ax.legend(frameon=False, loc="upper right")
+    if ax.get_legend_handles_labels()[0]:
+        ax.legend(frameon=False, loc="upper right")
 
     headline = (
         f"Ficha do cluster {card['cluster_label']} · {dataset} · granularidade {granularity}"
@@ -415,6 +421,10 @@ def cluster_card_figure(card: dict, *, dataset: str, granularity: str) -> Figure
     caption = (
         f"n={card['n']} · ρ_in={_fmt_value(card['rho_in'])} · "
         f"gini_subcluster={_fmt_value(card['gini_subcluster'])}"
+    )
+    caption += (
+        f" · cobertura interna={_fmt_value(card.get('internal_coverage_rate'))}"
+        f" · resíduo={int(card.get('residue_n', 0))}"
     )
     if card.get("homogeneous"):
         caption += " · não se subdivide nesta granularidade (homogêneo por dentro)"

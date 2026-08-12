@@ -9,8 +9,16 @@ SRC_DIR = Path(__file__).resolve().parents[1] / "src"
 sys.path.insert(0, str(SRC_DIR))
 
 from clustering.base import Partition
+from clustering.internal import InternalSubdivision
 from metrics.base import MetricContext, MetricResult
-from metrics.registry import METRICS, get_metric, metric_names
+from metrics.registry import (
+    METRICS,
+    evaluate_primary,
+    get_metric,
+    get_primary_capabilities,
+    metric_names,
+    primary_metric_names,
+)
 
 
 def _tiny_partition() -> Partition:
@@ -31,7 +39,9 @@ def _context(types: np.ndarray) -> MetricContext:
         p_total=int(types.sum()),
         adjacency={0: [1], 1: [0]},
         rng=np.random.default_rng(0),
-        split_subclusters=lambda points: [points],
+        internal_subdivider=lambda points: InternalSubdivision(
+            [list(points)], [], len(points), len(points)
+        ),
     )
 
 
@@ -102,7 +112,9 @@ class MetricRegistryTests(unittest.TestCase):
             p_total=130,
             adjacency={0: [1, 2], 1: [0, 2], 2: [0, 1]},
             rng=np.random.default_rng(0),
-            split_subclusters=lambda points: [points],
+            internal_subdivider=lambda points: InternalSubdivision(
+                [list(points)], [], len(points), len(points)
+            ),
         )
         result = get_metric("local_z")(partition, types, ctx)
         np.testing.assert_allclose(
@@ -127,7 +139,10 @@ class MetricRegistryTests(unittest.TestCase):
         # Two clusters => each has a single peer (< 2) => NaN.
         ctx = MetricContext(
             n_total=4, p_total=2, adjacency={0: [1], 1: [0]},
-            rng=np.random.default_rng(0), split_subclusters=lambda p: [p],
+            rng=np.random.default_rng(0),
+            internal_subdivider=lambda points: InternalSubdivision(
+                [list(points)], [], len(points), len(points)
+            ),
         )
         result = get_metric("local_z")(partition, types, ctx)
         self.assertTrue(np.all(np.isnan(result.per_cluster)))
@@ -144,6 +159,43 @@ class MetricRegistryTests(unittest.TestCase):
         }
         self.assertEqual(standardized, {"local_z"})
 
+    def test_only_local_z_and_sul_satisfy_the_primary_contract(self):
+        self.assertEqual(set(primary_metric_names()), {"local_z", "sul"})
+        self.assertEqual(get_primary_capabilities("local_z").rate_reference, "peers")
+        self.assertEqual(get_primary_capabilities("sul").rate_reference, "outside")
+        for name in ("gini", "gini_subcluster", "meanvar", "dp_difference", "dp_ratio"):
+            with self.subTest(metric=name), self.assertRaises(ValueError):
+                get_primary_capabilities(name)
+
+    def test_primary_direction_uses_the_declared_statistical_contrast(self):
+        local = evaluate_primary(
+            "local_z", score=-3.0, threshold=2.0, rho_in=0.4, rho_reference=0.5
+        )
+        sul = evaluate_primary(
+            "sul", score=9.0, threshold=5.0, rho_in=0.4, rho_reference=0.6
+        )
+        self.assertEqual(local.direction, "negative")
+        self.assertEqual(sul.direction, "negative")
+        self.assertEqual(local.detection_class, "negative")
+        self.assertEqual(sul.detection_class, "negative")
+
+    def test_non_evaluated_is_distinct_from_nothing_detected(self):
+        no_score = evaluate_primary(
+            "local_z", score=float("nan"), threshold=2.0, rho_in=0.5, rho_reference=0.5
+        )
+        no_threshold = evaluate_primary(
+            "local_z", score=1.0, threshold=None, rho_in=0.5, rho_reference=0.5
+        )
+        nothing = evaluate_primary(
+            "local_z", score=1.0, threshold=2.0, rho_in=0.5, rho_reference=0.4
+        )
+        self.assertEqual(no_score.evaluation_status, "não avaliado")
+        self.assertEqual(no_score.evaluation_reason, "score_nao_finito")
+        self.assertIsNone(no_score.detection_class)
+        self.assertEqual(no_threshold.evaluation_reason, "limiar_ausente_ou_invalido")
+        self.assertEqual(nothing.evaluation_status, "avaliado")
+        self.assertEqual(nothing.detection_class, "neutral")
+
     def test_gini_subcluster_is_gini_across_subcluster_rates(self):
         # One cluster split into two subclusters with rates 0.0 and 1.0 => Gini 0.5.
         types = np.array([0, 0, 1, 1])
@@ -158,7 +210,9 @@ class MetricRegistryTests(unittest.TestCase):
             p_total=2,
             adjacency={0: []},
             rng=np.random.default_rng(0),
-            split_subclusters=lambda points: [[0, 1], [2, 3]],
+            internal_subdivider=lambda points: InternalSubdivision(
+                [[0, 1], [2, 3]], [], 2, 4
+            ),
         )
         result = get_metric("gini_subcluster")(partition, types, ctx)
         np.testing.assert_allclose(result.per_cluster, [0.5])

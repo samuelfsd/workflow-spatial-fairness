@@ -208,6 +208,7 @@ class ClusterCardTests(unittest.TestCase):
             "raio_medio_km": 3.2,
             "subclusters": pd.DataFrame(
                 {
+                    "component": ["subcluster", "subcluster", "subcluster"],
                     "subcluster": [0, 1, 2],
                     "n": [50, 30, 20],
                     "p": [25, 12, 3],
@@ -215,6 +216,8 @@ class ClusterCardTests(unittest.TestCase):
                     "rho": [0.5, 0.4, 0.15],
                 }
             ),
+            "internal_coverage_rate": 1.0,
+            "residue_n": 0,
             "homogeneous": False,
         }
         card.update(overrides)
@@ -248,7 +251,14 @@ class ClusterCardTests(unittest.TestCase):
             homogeneous=True,
             gini_subcluster=0.0,
             subclusters=pd.DataFrame(
-                {"subcluster": [0], "n": [100], "p": [40], "n_neg": [60], "rho": [0.4]}
+                {
+                    "component": ["subcluster"],
+                    "subcluster": [0],
+                    "n": [100],
+                    "p": [40],
+                    "n_neg": [60],
+                    "rho": [0.4],
+                }
             ),
         )
         fig = cluster_card_figure(card, dataset="fake", granularity="25")

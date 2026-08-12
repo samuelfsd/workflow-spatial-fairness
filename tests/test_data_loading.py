@@ -27,6 +27,24 @@ class DataLoadingTests(unittest.TestCase):
         self.assertAlmostEqual(float(dataset.radii[0]), 0.05)
         self.assertAlmostEqual(float(dataset.radii[-1]), 1.0)
 
+    def test_each_dataset_declares_readable_outcome_semantics(self):
+        for name, spec in DATASET_SPECS.items():
+            with self.subTest(dataset=name):
+                self.assertTrue(spec.positive_label)
+                self.assertTrue(spec.negative_label)
+                self.assertIn(
+                    spec.desirability,
+                    {"favorável", "desfavorável", "não declarada"},
+                )
+
+    def test_real_and_synthetic_semantics_are_not_conflated(self):
+        self.assertEqual(DATASET_SPECS["lar"].positive_label, "pedido aprovado")
+        self.assertEqual(DATASET_SPECS["lar"].desirability, "favorável")
+        self.assertEqual(DATASET_SPECS["crime"].positive_label, "predição de crime")
+        self.assertEqual(DATASET_SPECS["crime"].desirability, "desfavorável")
+        for name in ("semisynth", "synth_fair", "synth_unfair", "synth_local"):
+            self.assertEqual(DATASET_SPECS[name].desirability, "não declarada")
+
 
 if __name__ == "__main__":
     unittest.main()

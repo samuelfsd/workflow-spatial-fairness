@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import json
 import math
+import shlex
+import sys
 import time
 from contextlib import contextmanager
 from pathlib import Path
@@ -14,11 +16,10 @@ import numpy as np
 import pandas as pd
 
 from clustering.base import Partition
-from clustering.capped import density_subclusters
+from clustering.internal import diagnostic_density_subdivision
 from clustering.registry import get_partitioner
 from data_loading import LoadedDataset, load_dataset
 from descriptives import (
-    cluster_card_data,
     cluster_frame,
     dataset_balance,
     dispersion_summary,
@@ -26,20 +27,12 @@ from descriptives import (
     organic_local_z_deltas,
     partition_profile,
 )
-from figures import (
-    balance_figure,
-    cluster_card_figure,
-    close as close_figures,
-    metric_panels_figure,
-    save_figure,
-    save_pdf_report,
-)
+from exploration_report import generate_cluster_exploration
 from lens import GREATER_LA_BBOX, clusters_in_bbox
 from metrics.base import MetricContext
 from metrics.group_fairness import (
     calculate_gini,
     calculate_meanvar,
-    classify_direction,
     get_signif_threshold,
     get_simple_stats,
     scan_partitioning,
@@ -47,7 +40,12 @@ from metrics.group_fairness import (
     select_significant_regions,
 )
 from metrics.neighbors import build_delaunay_adjacency
-from metrics.registry import get_metric, metric_names
+from metrics.registry import (
+    evaluate_primary,
+    get_metric,
+    get_primary_capabilities,
+    metric_names,
+)
 from metrics.significance import (
     analytic_threshold,
     significance_threshold,
@@ -61,6 +59,7 @@ from regions import (
     create_seeds,
     filter_non_overlapping_regions,
 )
+from run_snapshot import write_run_snapshot
 from visualization import (
     save_clustering_stage_map,
     save_detection_stage_map,
@@ -68,25 +67,6 @@ from visualization import (
 )
 
 _EXPLAIN_DEFAULT_METRICS = ("local_z", "sul", "gini", "gini_subcluster", "dp_difference")
-
-# Subcluster granularities for the cluster cards: a pocket that only shows up at
-# the finer split is an artifact of the parameter, not a finding.
-_CARD_GRANULARITIES = (25, 100)
-
-#: How many clusters get a card, ranked by internal inequality.
-_CARD_TOP_N = 3
-
-# Interval/reading caption shown on each metric panel so the range is visible.
-_METRIC_INFO = {
-    "local_z": "z de vizinhança · intervalo (−∞, +∞) · sinal = direção · |z| ≥ limiar ⇒ significativo",
-    "sul": "SUL (baseline) · intervalo [0, +∞) · sempre ≥ 0 · ≥ limiar ⇒ significativo",
-    "gini": "contribuição-Gini · assinada (~ ±0,1) · > 0 puxa a desigualdade do mapa p/ cima",
-    "gini_subcluster": "Gini entre subclusters · intervalo [0, 1] · 0 = homogêneo por dentro",
-    "meanvar": "MeanVar · desvio² da taxa · intervalo [0, +∞)",
-    "dp_difference": "taxa de seleção do cluster · escalar da partição = max − min (paridade estatística)",
-    "dp_ratio": "taxa de seleção do cluster · escalar da partição = min / max (paridade estatística)",
-}
-
 
 def _json_params(value: dict[str, Any]) -> str:
     return json.dumps(value, sort_keys=True)
@@ -552,6 +532,7 @@ class ExperimentRunner:
         signif_level: float = 0.005,
         metrics: tuple[str, ...] | None = None,
         primary_metric: str = "local_z",
+        exploration_profile: str = "full",
     ) -> None:
         """Run the pipeline once and emit stage-by-stage explainability outputs.
 
@@ -560,6 +541,7 @@ class ExperimentRunner:
         keeps the best partition by max SUL — the same selection rule the
         unrestricted comparison map uses, so both maps show the same clustering.
         """
+        primary_capabilities = get_primary_capabilities(primary_metric)
         method = self.clustering_method
         run_started = time.perf_counter()
         self.log(f"Starting explain run for dataset={dataset_name} method={method}")
@@ -598,23 +580,13 @@ class ExperimentRunner:
                 self.log(f"Selected best partition by max SUL: params={partition.params}")
 
         maps_dir = self.out_dir / "maps"
-        with self.timed_step("[3/5] Writing stage-1 clustering map"):
-            save_clustering_stage_map(
-                dataset.df,
-                dataset.types,
-                partition,
-                maps_dir / f"explain_{dataset.name}_{method}_stage1_clusters.html",
-                max_points=self.max_map_points,
-                seed=self.seed,
-            )
-
         adjacency = build_delaunay_adjacency(partition, dataset.df)
         ctx = MetricContext(
             n_total=dataset.n_total,
             p_total=dataset.p_total,
             adjacency=adjacency,
             rng=np.random.default_rng(self.seed),
-            split_subclusters=self._subcluster_splitter(dataset.df),
+            internal_subdivider=self._internal_subdivider(dataset.df, partition),
         )
         metric_list = list(metrics) if metrics else list(_EXPLAIN_DEFAULT_METRICS)
         if primary_metric not in metric_list and primary_metric in metric_names():
@@ -654,6 +626,7 @@ class ExperimentRunner:
             thresholds: dict[str, float | None] = {}
             analytic_thresholds: dict[str, float | None] = {}
             null_by_metric: dict[str, np.ndarray] = {}
+            effective_seeds: dict[str, int] = {}
             for offset, name in enumerate(metric_list):
                 result = results[name]
                 # The analytic band only means anything in standard-error units,
@@ -664,6 +637,12 @@ class ExperimentRunner:
                 else:
                     analytic_thresholds[name] = None
                 if result.supports_mc and n_alt_worlds > 0 and partition.regions:
+                    effective_seed = (
+                        self.seed
+                        + int(partition.params.get("min_cluster_size", 0))
+                        + offset
+                    )
+                    effective_seeds[name] = effective_seed
                     null = simulate_null_metric(
                         get_metric(name),
                         partition,
@@ -671,7 +650,7 @@ class ExperimentRunner:
                         n_alt_worlds,
                         dataset.n_total,
                         dataset.p_total,
-                        seed=self.seed + int(partition.params.get("min_cluster_size", 0)) + offset,
+                        seed=effective_seed,
                     )
                     null_by_metric[name] = null
                     thresholds[name] = significance_threshold(signif_level, null)
@@ -681,8 +660,15 @@ class ExperimentRunner:
             primary = results.get(primary_metric)
             primary_threshold = thresholds.get(primary_metric)
 
+            stats_by_label = {
+                int(region["cluster_label"]): get_simple_stats(
+                    region["points"], dataset.types
+                )[:2]
+                for region in partition.regions
+            }
             region_results = []
             for idx, region in enumerate(partition.regions):
+                cluster_label = int(region["cluster_label"])
                 n, p, rho = get_simple_stats(region["points"], dataset.types)
                 rho_out = (
                     (dataset.p_total - p) / (dataset.n_total - n)
@@ -690,15 +676,31 @@ class ExperimentRunner:
                     else float("nan")
                 )
                 score = float(primary.per_cluster[idx]) if primary is not None else float("nan")
-                significant = (
-                    primary_threshold is not None
-                    and not np.isnan(score)
-                    and abs(score) >= primary_threshold
-                )
-                if primary is not None and primary.signed:
-                    direction = "negative" if score < 0 else "positive" if score > 0 else "neutral"
+                peers = adjacency.get(cluster_label, [])
+                if len(peers) >= 2:
+                    peer_n = sum(stats_by_label[label][0] for label in peers)
+                    peer_p = sum(stats_by_label[label][1] for label in peers)
+                    rho_peer = peer_p / peer_n if peer_n else float("nan")
                 else:
-                    direction = classify_direction(n, p, dataset.n_total, dataset.p_total)
+                    rho_peer = float("nan")
+                rho_reference = (
+                    rho_peer
+                    if primary_capabilities.rate_reference == "peers"
+                    else rho_out
+                )
+                precondition_reason = (
+                    "menos_de_dois_peers"
+                    if primary_capabilities.rate_reference == "peers" and len(peers) < 2
+                    else None
+                )
+                decision = evaluate_primary(
+                    primary_metric,
+                    score=score,
+                    threshold=primary_threshold,
+                    rho_in=rho,
+                    rho_reference=rho_reference,
+                    precondition_reason=precondition_reason,
+                )
 
                 row = {
                     "region": region,
@@ -707,10 +709,15 @@ class ExperimentRunner:
                     "n_neg": n - p,
                     "rho": rho,
                     "rho_out": rho_out,
+                    "rho_peer": rho_peer,
                     "score": score,
                     "score_name": primary_metric,
-                    "significant": significant,
-                    "direction": direction,
+                    "significant": decision.significant is True,
+                    "direction": decision.direction,
+                    "evaluation_status": decision.evaluation_status,
+                    "evaluation_reason": decision.evaluation_reason,
+                    "detection_class": decision.detection_class,
+                    "evidence_ratio": decision.evidence_ratio,
                     "local_z_delta_after_rescue": (
                         delta_by_parent.get(int(region.get("origin_cluster_label", -1)))
                         if region.get("origin", "organic") == "organic"
@@ -727,6 +734,53 @@ class ExperimentRunner:
 
             region_results.sort(key=_sort_key, reverse=True)
 
+            write_run_snapshot(
+                self.out_dir,
+                dataset=dataset,
+                partition=partition,
+                metric_results=results,
+                thresholds=thresholds,
+                null_distributions=null_by_metric,
+                effective_seeds=effective_seeds,
+                seed=self.seed,
+                primary_metric=primary_metric,
+                signif_level=signif_level,
+                n_alt_worlds=n_alt_worlds,
+                command=shlex.join(sys.argv),
+                exploration_profile=exploration_profile,
+            )
+
+            if exploration_profile == "none":
+                significant = [item for item in region_results if item["significant"]]
+                self.clustering_rows.append(
+                    self.common_row(
+                        experiment="explain",
+                        dataset=dataset,
+                        method=partition.method,
+                        params=partition.params,
+                        n_regions=len(partition.regions),
+                        max_sul=max_sul,
+                        signif_threshold=primary_threshold,
+                        significant_regions=len(significant),
+                        best_region=best_region,
+                        meanvar=meanvar,
+                        meanvar_max_score=meanvar_max,
+                        gini=gini,
+                        noise_n=partition.noise_n,
+                    )
+                )
+                return
+
+            with self.timed_step("Writing stage-1 clustering map from persisted run"):
+                save_clustering_stage_map(
+                    dataset.df,
+                    dataset.types,
+                    partition,
+                    maps_dir / f"explain_{dataset.name}_{method}_stage1_clusters.html",
+                    max_points=self.max_map_points,
+                    seed=self.seed,
+                )
+
             save_detection_stage_map(
                 dataset.df,
                 dataset.types,
@@ -738,49 +792,7 @@ class ExperimentRunner:
                 seed=self.seed,
             )
 
-            labels = [item["region"].get("cluster_label", "?") for item in region_results]
-            panels = [
-                {
-                    "name": name,
-                    "labels": labels,
-                    "values": [item[f"metric_{name}"] for item in region_results],
-                    "directions": [item["direction"] for item in region_results],
-                    "significant": [item["significant"] for item in region_results],
-                    "threshold": thresholds.get(name),
-                    "analytic_threshold": analytic_thresholds.get(name),
-                    "signed": results[name].signed,
-                    "caption": _METRIC_INFO.get(name, ""),
-                }
-                for name in metric_list
-            ]
-            figures_dir = self.out_dir / "figures"
-            report_figures = []
-
             frame = cluster_frame(dataset.df, partition, dataset.types)
-            balance = balance_figure(frame, dataset=dataset.name, method=method)
-            save_figure(balance, figures_dir / f"explain_{dataset.name}_{method}_balance")
-            report_figures.append(balance)
-
-            panels_figure = metric_panels_figure(panels, dataset=dataset.name, method=method)
-            save_figure(panels_figure, figures_dir / f"explain_{dataset.name}_{method}_metrics_panels")
-            report_figures.append(panels_figure)
-
-            report_figures.extend(
-                self._write_cluster_cards(
-                    dataset=dataset,
-                    partition=partition,
-                    adjacency=adjacency,
-                    results=results,
-                    metric_list=metric_list,
-                    figures_dir=figures_dir,
-                    method=method,
-                    frame=frame,
-                )
-            )
-
-            save_pdf_report(report_figures, figures_dir / f"explain_{dataset.name}_{method}_report.pdf")
-            close_figures(*report_figures)
-
             dispersion = dispersion_summary(frame)
             dispersion.to_csv(self.out_dir / f"explain_{dataset.name}_dispersion.csv")
 
@@ -794,12 +806,17 @@ class ExperimentRunner:
                         "n_neg": item["n_neg"],
                         "rho": item["rho"],
                         "rho_out": item["rho_out"],
+                        "rho_peer": item["rho_peer"],
                         "primary_metric": primary_metric,
                         "primary_score": item["score"],
                         "signif_threshold": primary_threshold,
                         "analytic_threshold": analytic_thresholds.get(primary_metric),
                         "significant": item["significant"],
                         "direction": item["direction"],
+                        "evaluation_status": item["evaluation_status"],
+                        "evaluation_reason": item["evaluation_reason"],
+                        "detection_class": item["detection_class"],
+                        "evidence_ratio": item["evidence_ratio"],
                         "local_z_delta_after_rescue": item[
                             "local_z_delta_after_rescue"
                         ],
@@ -916,104 +933,26 @@ class ExperimentRunner:
                 noise_n=partition.noise_n,
             )
         )
-
-    def _subcluster_splitter(self, df: pd.DataFrame, min_cluster_size_min: int = 25):
-        """Return a function splitting a region's point ids into density subclusters.
-
-        Reuses the density split from the capped partitioner (ADR-0001) so
-        `gini_subcluster` and the size cap share one definition of "subcluster".
-        `min_cluster_size_min` is the granularity knob the cluster cards vary.
-        """
-        return lambda points: density_subclusters(
-            df, points, min_cluster_size_min, min_samples=self.hdbscan_min_samples
+        generate_cluster_exploration(
+            self.out_dir,
+            primary_metric=primary_metric,
+            profile=exploration_profile,
+            dataset=dataset,
+            progress=self.log,
         )
 
-    def _card_cluster_labels(
+    def _internal_subdivider(
         self,
+        df: pd.DataFrame,
         partition: Partition,
-        results: dict[str, Any],
-        metric_list: list[str],
-    ) -> list[int]:
-        """Clusters worth a card: the most internally unequal ones.
-
-        Ranked by `gini_subcluster` when it ran (the card exists to show what that
-        number is made of); otherwise by the primary metric's magnitude.
-        """
-        ranking_metric = "gini_subcluster" if "gini_subcluster" in metric_list else (
-            metric_list[0] if metric_list else None
+        multiplier: int = 1,
+    ):
+        """Diagnostic density inspection at g1 or its declared g2 sensitivity."""
+        min_cluster_size = int(partition.params.get("min_cluster_size", 25)) * multiplier
+        min_samples = int(partition.params.get("min_samples", self.hdbscan_min_samples))
+        return lambda points: diagnostic_density_subdivision(
+            df, points, min_cluster_size=min_cluster_size, min_samples=min_samples
         )
-        if ranking_metric is None or not partition.regions:
-            return []
-
-        scores = np.asarray(results[ranking_metric].per_cluster, dtype=float)
-        order = np.argsort(np.where(np.isnan(scores), -np.inf, np.abs(scores)))[::-1]
-        return [
-            int(partition.regions[int(idx)]["cluster_label"])
-            for idx in order[:_CARD_TOP_N]
-            if not np.isnan(scores[int(idx)])
-        ]
-
-    def _write_cluster_cards(
-        self,
-        *,
-        dataset: LoadedDataset,
-        partition: Partition,
-        adjacency: dict[int, list[int]],
-        results: dict[str, Any],
-        metric_list: list[str],
-        figures_dir: Path,
-        method: str,
-        frame: pd.DataFrame,
-    ) -> list[Any]:
-        """Write one card per interesting cluster, at each subcluster granularity.
-
-        Two granularities on purpose: a pocket that only appears at the finer
-        split is an artifact of `min_cluster_size_min`, and that has to be
-        visible rather than argued.
-        """
-        figures = []
-        rows = []
-        for label in self._card_cluster_labels(partition, results, metric_list):
-            for granularity in _CARD_GRANULARITIES:
-                card = cluster_card_data(
-                    dataset.df,
-                    partition,
-                    dataset.types,
-                    cluster_label=label,
-                    splitter=self._subcluster_splitter(dataset.df, granularity),
-                    adjacency=adjacency,
-                    global_rate=dataset.global_rate,
-                    frame=frame,
-                )
-                figure = cluster_card_figure(
-                    card, dataset=dataset.name, granularity=str(granularity)
-                )
-                save_figure(
-                    figure,
-                    figures_dir / f"explain_{dataset.name}_{method}_card_cluster{label}_min{granularity}",
-                )
-                figures.append(figure)
-
-                subclusters = card.pop("subclusters")
-                for _, sub in subclusters.iterrows():
-                    rows.append(
-                        {
-                            "cluster_label": label,
-                            "granularity": granularity,
-                            "gini_subcluster": card["gini_subcluster"],
-                            "rho_in": card["rho_in"],
-                            "rho_peer": card["rho_peer"],
-                            "rho_global": card["rho_global"],
-                            "homogeneous": card["homogeneous"],
-                            **sub.to_dict(),
-                        }
-                    )
-
-        if rows:
-            pd.DataFrame(rows).to_csv(
-                self.out_dir / f"explain_{dataset.name}_cluster_cards.csv", index=False
-            )
-        return figures
 
     def write_outputs(self) -> None:
         with self.timed_step("Writing CSV outputs"):

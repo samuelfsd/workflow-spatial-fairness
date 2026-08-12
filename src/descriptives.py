@@ -20,6 +20,7 @@ import numpy as np
 import pandas as pd
 
 from clustering.base import Partition
+from clustering.internal import InternalSubdivision
 from metrics.base import MetricContext
 from metrics.group_fairness import calculate_gini, get_simple_stats
 from metrics.neighbors import build_delaunay_adjacency
@@ -30,7 +31,7 @@ EARTH_RADIUS_KM = 6371.0088
 #: Variables profiled by `dispersion_summary`, in reading order.
 DISPERSION_VARIABLES = ("n", "p", "n_neg", "rho", "raio_medio_km")
 
-Splitter = Callable[[list[int]], list[list[int]]]
+InternalSubdivider = Callable[[list[int]], InternalSubdivision]
 
 
 def _haversine_km(lat: np.ndarray, lon: np.ndarray, lat0: float, lon0: float) -> np.ndarray:
@@ -337,13 +338,41 @@ def organic_local_z_deltas(
     )
 
 
-def subcluster_frame(points: list[int], types: np.ndarray, splitter: Splitter) -> pd.DataFrame:
-    """One row per density subcluster of a cluster: `n`, `p`, `n_neg`, `rho`."""
+def subcluster_frame(
+    points: list[int], types: np.ndarray, subdivider: InternalSubdivider
+) -> pd.DataFrame:
+    """Condensed subclusters plus explicit residue with balance statistics."""
+    subdivision = subdivider(list(points))
     rows = []
-    for idx, subset in enumerate(splitter(list(points))):
+    for idx, subset in enumerate(subdivision.subclusters):
         n, p, rho = get_simple_stats(subset, types)
-        rows.append({"subcluster": idx, "n": n, "p": p, "n_neg": n - p, "rho": rho})
-    return pd.DataFrame(rows, columns=["subcluster", "n", "p", "n_neg", "rho"])
+        rows.append(
+            {
+                "component": "subcluster",
+                "subcluster": idx,
+                "n": n,
+                "p": p,
+                "n_neg": n - p,
+                "rho": rho,
+            }
+        )
+    if subdivision.residue:
+        n, p, rho = get_simple_stats(subdivision.residue, types)
+        rows.append(
+            {
+                "component": "residue",
+                "subcluster": pd.NA,
+                "n": n,
+                "p": p,
+                "n_neg": n - p,
+                "rho": rho,
+            }
+        )
+    frame = pd.DataFrame(
+        rows, columns=["component", "subcluster", "n", "p", "n_neg", "rho"]
+    )
+    frame.attrs["subdivision"] = subdivision
+    return frame
 
 
 def peer_rate(frame: pd.DataFrame, adjacency: dict[int, list[int]], cluster_label: int) -> float:
@@ -370,7 +399,7 @@ def cluster_card_data(
     types: np.ndarray,
     *,
     cluster_label: int,
-    splitter: Splitter,
+    subdivider: InternalSubdivider,
     adjacency: dict[int, list[int]],
     global_rate: float,
     frame: pd.DataFrame | None = None,
@@ -393,7 +422,9 @@ def cluster_card_data(
     region = next(
         region for region in partition.regions if region.get("cluster_label") == cluster_label
     )
-    subclusters = subcluster_frame(list(region["points"]), types, splitter)
+    components = subcluster_frame(list(region["points"]), types, subdivider)
+    subdivision = components.attrs["subdivision"]
+    subclusters = components[components["component"] == "subcluster"]
 
     return {
         "cluster_label": cluster_label,
@@ -403,8 +434,13 @@ def cluster_card_data(
         "rho_in": float(row["rho"]),
         "rho_peer": peer_rate(frame, adjacency, cluster_label),
         "rho_global": float(global_rate),
-        "gini_subcluster": calculate_gini(subclusters["rho"]),
+        "gini_subcluster": (
+            calculate_gini(subclusters["rho"]) if len(subclusters) else float("nan")
+        ),
         "raio_medio_km": float(row["raio_medio_km"]),
-        "subclusters": subclusters,
-        "homogeneous": len(subclusters) <= 1,
+        "subclusters": components,
+        "subdivision_status": subdivision.status,
+        "internal_coverage_rate": subdivision.coverage_rate,
+        "residue_n": subdivision.residue_n,
+        "homogeneous": len(subdivision.subclusters) <= 1,
     }
