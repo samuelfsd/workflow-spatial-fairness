@@ -137,6 +137,7 @@ docs**/
 # ia
 .opencode
 .claude
+.codex
 .agents
 AGENTS.md
 CLAUDE.md
