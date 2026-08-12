@@ -15,6 +15,7 @@ from clustering.base import Partition
 from clustering.capped import run_capped_hdbscan_sweep
 from clustering.hdbscan import run_hdbscan_sweep
 from clustering.rescue import run_hdbscan_rescue_sweep
+from clustering.stat_cap import run_hdbscan_stat_cap_sweep, run_hdbscan_stat_leaf_sweep
 
 PartitionerFn = Callable[..., list[Partition]]
 
@@ -22,6 +23,8 @@ PARTITIONERS: dict[str, PartitionerFn] = {
     "hdbscan": run_hdbscan_sweep,
     "capped_hdbscan": run_capped_hdbscan_sweep,
     "hdbscan_rescue": run_hdbscan_rescue_sweep,
+    "hdbscan_stat_cap": run_hdbscan_stat_cap_sweep,
+    "hdbscan_stat_leaf": run_hdbscan_stat_leaf_sweep,
     # "dbscan": run_dbscan_sweep,  # future: src/clustering/dbscan.py
 }
 

@@ -45,7 +45,9 @@ def _add_common_args(parser: argparse.ArgumentParser) -> None:
         "--clustering",
         choices=partitioner_names(),
         default="hdbscan",
-        help="Spatial partitioner used for the clustering comparison.",
+        help="Spatial partitioner used for the clustering comparison. "
+        "hdbscan_stat_leaf redivides only statistical-tail parents using "
+        "HDBSCAN leaves and leaves peripheral points unassigned.",
     )
     parser.add_argument(
         "--hdbscan-min-samples",

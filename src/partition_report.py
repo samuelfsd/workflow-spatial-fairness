@@ -73,6 +73,10 @@ def config_label(
     if method == "hdbscan_rescue":
         suffix = " + cap estatístico" if stat_cap else ""
         return f"resgate min_samples={rescue_samples}{suffix}"
+    if method == "hdbscan_stat_cap":
+        return "redivisão recursiva (gatilho média + 1σ)"
+    if method == "hdbscan_stat_leaf":
+        return "folhas HDBSCAN (gatilho média + 1σ)"
     if cap is None:
         return "sem cap (orgânico)"
     mechanism = "cap nativo" if method == "hdbscan" else "redivisão"
@@ -89,6 +93,8 @@ def config_slug(
     if method == "hdbscan_rescue":
         suffix = "_statcap" if stat_cap else ""
         return f"hdbscan_rescue_ms{rescue_samples}{suffix}"
+    if method in ("hdbscan_stat_cap", "hdbscan_stat_leaf"):
+        return method
     return method if cap is None else f"{method}_cap{cap}"
 
 
@@ -107,9 +113,9 @@ def build_configs(
     Returns `label -> (partition, file slug, cap)` and a list of human-readable
     reasons for configurations that were **not** fitted.
 
-    The default comparison is the organic `hdbscan` against the experimental
-    `hdbscan_rescue` sweep. The two absolute-cap mechanisms remain callable only
-    to regenerate the negative evidence recorded by ADR-0001.
+    The default comparison contrasts organic `hdbscan` with the two statistical-
+    tail refinements. The rejected rescue and absolute-cap mechanisms remain
+    callable to regenerate their evidence.
 
     A cap at or below `effective_min_cluster_size` is **arithmetically
     impossible** — it asks for clusters both smaller and larger than the same
@@ -139,6 +145,15 @@ def build_configs(
                     config_slug(method, None, rescue_samples, stat_cap),
                     None,
                 )
+            continue
+        if method in ("hdbscan_stat_cap", "hdbscan_stat_leaf"):
+            partition = fit(
+                df,
+                (min_cluster_frac,),
+                min_samples=min_samples,
+            )[0]
+            label = config_label(method, None)
+            configs[label] = (partition, config_slug(method, None), None)
             continue
         # Plain hdbscan is also reported uncapped (the organic default); the
         # recursive split has no meaning without a cap, so it is cap-only.
@@ -232,6 +247,9 @@ def markdown_table(profile: pd.DataFrame) -> str:
         ("Raio médio de resgate (km)", "rescue_raio_medio_km_mean", "{:.1f}"),
         ("Alvos do cap estatístico", "stat_cap_targets", "{:.0f}"),
         ("Recusas do cap estatístico", "stat_cap_refusals", "{:.0f}"),
+        ("Pais divididos por folhas", "stat_leaf_split_parents", "{:.0f}"),
+        ("Recusas da seleção por folhas", "stat_leaf_refusals", "{:.0f}"),
+        ("Novos não atribuídos pelas folhas", "stat_leaf_noise_n", "{:.0f}"),
         ("CV antes do cap estatístico", "cluster_size_cv_before_stat_cap", "{:.2f}"),
         ("CV depois do cap estatístico", "cluster_size_cv_after_stat_cap", "{:.2f}"),
         ("Clusters orgânicos com Δz", "local_z_delta_evaluated", "{:.0f}"),
@@ -263,7 +281,7 @@ def main() -> None:
     parser.add_argument(
         "--clustering",
         type=_parse_list,
-        default=("hdbscan", "hdbscan_rescue"),
+        default=("hdbscan", "hdbscan_stat_cap", "hdbscan_stat_leaf"),
         help=f"Comma-separated partitioners to compare. Available: {partitioner_names()}",
     )
     parser.add_argument(

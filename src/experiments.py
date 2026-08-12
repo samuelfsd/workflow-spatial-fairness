@@ -187,7 +187,13 @@ class ExperimentRunner:
         key = (dataset.name, method)
         if key not in self.partition_cache:
             partitions = []
-            if method in ("hdbscan", "capped_hdbscan", "hdbscan_rescue"):
+            if method in (
+                "hdbscan",
+                "capped_hdbscan",
+                "hdbscan_rescue",
+                "hdbscan_stat_cap",
+                "hdbscan_stat_leaf",
+            ):
                 for idx, frac in enumerate(self.hdbscan_fracs, start=1):
                     extra: dict[str, Any] = {"min_samples": self.hdbscan_min_samples}
                     if method == "capped_hdbscan":
@@ -565,6 +571,8 @@ class ExperimentRunner:
                 "hdbscan",
                 "capped_hdbscan",
                 "hdbscan_rescue",
+                "hdbscan_stat_cap",
+                "hdbscan_stat_leaf",
             ):
                 fit = get_partitioner(method)
                 extra: dict[str, Any] = {"min_samples": self.hdbscan_min_samples}

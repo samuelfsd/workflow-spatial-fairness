@@ -15,30 +15,7 @@ import pandas as pd
 from clustering.base import Partition
 from clustering.capped import recursive_density_split
 from clustering.hdbscan import effective_min_cluster_size, fit_hdbscan_partition
-
-
-def statistical_cap_directive(sizes: Sequence[int]) -> dict[int, float]:
-    """Map oversized cluster indices to leave-one-out mean split targets.
-
-    A cluster is invited to split only when its size exceeds the mean plus one
-    sample standard deviation of every *other* cluster.  With fewer than three
-    clusters there is no defensible leave-one-out sample deviation, so no
-    directive is emitted.
-    """
-    values = np.asarray(sizes, dtype=float)
-    if values.ndim != 1:
-        raise ValueError("sizes must be one-dimensional")
-    if len(values) < 3:
-        return {}
-
-    directives: dict[int, float] = {}
-    for idx, size in enumerate(values):
-        others = np.delete(values, idx)
-        mean = float(others.mean())
-        sigma = float(others.std(ddof=1))
-        if size > mean + sigma:
-            directives[idx] = mean
-    return directives
+from clustering.stat_cap import statistical_cap_directive
 
 
 def _sample_cv(sizes: Sequence[int]) -> float | None:
