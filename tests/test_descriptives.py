@@ -213,6 +213,22 @@ class ReadingHelpersTests(unittest.TestCase):
         self.assertEqual(profile["over_cap"], 1)
         self.assertEqual(profile["forced_uncapped"], 0)
 
+    def test_partition_profile_reports_statistical_leaf_outcomes(self):
+        partition = _partition([[0, 1], [2, 3]], 6, noise=[4, 5])
+        partition.params.update(
+            {
+                "stat_leaf_split_parents": 2,
+                "stat_leaf_refusals": 3,
+                "stat_leaf_noise_n": 17,
+            }
+        )
+
+        profile = partition_profile(partition, n_total=6)
+
+        self.assertEqual(profile["stat_leaf_split_parents"], 2)
+        self.assertEqual(profile["stat_leaf_refusals"], 3)
+        self.assertEqual(profile["stat_leaf_noise_n"], 17)
+
     def test_organic_local_z_delta_is_zero_when_no_rescue_cluster_was_added(self):
         coords = [
             (0.0, 0.0), (0.01, 0.0),

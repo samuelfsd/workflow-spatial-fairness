@@ -32,6 +32,7 @@ def fit_hdbscan_partition(
     min_samples: int = 60,
     max_cluster_size: int | None = None,
     min_cluster_size_override: int | None = None,
+    cluster_selection_method: str = "eom",
 ) -> Partition:
     """Fit one HDBSCAN partition using haversine distance on lat/lon.
 
@@ -49,6 +50,10 @@ def fit_hdbscan_partition(
     `min_cluster_size_override` preserves an absolute region-size ruler when a
     subset is fitted. The rescue pass uses it so ``frac × N`` from the full
     dataset does not silently become ``frac × noise_n``.
+
+    `cluster_selection_method="leaf"` exposes the finest stable leaves of the
+    same density hierarchy. The organic default remains ``"eom"``; leaf is
+    reserved for explicit refinement experiments.
     """
     min_cluster_size = (
         int(min_cluster_size_override)
@@ -68,6 +73,7 @@ def fit_hdbscan_partition(
                 "min_samples": int(effective_min_samples),
                 "max_cluster_size": max_cluster_size,
                 "metric": "haversine",
+                "cluster_selection_method": cluster_selection_method,
             },
             labels=labels,
             regions=[],
@@ -80,7 +86,7 @@ def fit_hdbscan_partition(
         min_samples=effective_min_samples,
         max_cluster_size=max_cluster_size,
         metric="haversine",
-        cluster_selection_method="eom",
+        cluster_selection_method=cluster_selection_method,
         copy=True,
     )
     labels = clusterer.fit_predict(coords)
@@ -96,6 +102,7 @@ def fit_hdbscan_partition(
                 "min_cluster_frac": float(min_cluster_frac),
                 "min_cluster_size": int(min_cluster_size),
                 "max_cluster_size": max_cluster_size,
+                "cluster_selection_method": cluster_selection_method,
             }
         )
 
@@ -108,6 +115,7 @@ def fit_hdbscan_partition(
             "min_samples": int(effective_min_samples),
             "max_cluster_size": max_cluster_size,
             "metric": "haversine",
+            "cluster_selection_method": cluster_selection_method,
         },
         labels=labels,
         regions=regions,

@@ -43,10 +43,15 @@ class ConfigLabelTests(unittest.TestCase):
         self.assertEqual(config_label("hdbscan", None), "sem cap (orgânico)")
         self.assertEqual(config_label("hdbscan", 1000), "cap nativo (teto 1000)")
         self.assertEqual(config_label("capped_hdbscan", 1000), "redivisão (teto 1000)")
+        self.assertEqual(
+            config_label("hdbscan_stat_leaf", None),
+            "folhas HDBSCAN (gatilho média + 1σ)",
+        )
 
     def test_slugs_stay_ascii_for_file_names(self):
         self.assertEqual(config_slug("capped_hdbscan", 2000), "capped_hdbscan_cap2000")
         self.assertEqual(config_slug("hdbscan", None), "hdbscan")
+        self.assertEqual(config_slug("hdbscan_stat_leaf", None), "hdbscan_stat_leaf")
 
 
 class BuildConfigsTests(unittest.TestCase):
@@ -106,6 +111,22 @@ class BuildConfigsTests(unittest.TestCase):
         self.assertEqual(skipped, [])
         self.assertIn("resgate min_samples=5", configs)
         self.assertEqual(configs["resgate min_samples=5"][0].method, "hdbscan_rescue")
+
+    def test_statistical_leaf_is_a_single_uncapped_density_configuration(self):
+        df = _two_blob_df()
+        configs, skipped = build_configs(
+            df,
+            methods=("hdbscan_stat_leaf",),
+            min_cluster_frac=0.1,
+            max_cluster_sizes=(),
+            min_samples=5,
+        )
+
+        self.assertEqual(skipped, [])
+        label = "folhas HDBSCAN (gatilho média + 1σ)"
+        self.assertEqual(set(configs), {label})
+        self.assertEqual(configs[label][0].method, "hdbscan_stat_leaf")
+        self.assertIsNone(configs[label][2])
 
 
 class ProfileTableTests(unittest.TestCase):

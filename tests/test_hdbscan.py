@@ -12,6 +12,24 @@ from clustering.hdbscan import fit_hdbscan_partition
 
 
 class HDBSCANTests(unittest.TestCase):
+    def test_leaf_selection_is_available_for_density_refinement(self):
+        df = pd.DataFrame(
+            {
+                "lat": [0.0, 0.0001, 0.0002, 1.0, 1.0001, 1.0002, 20.0],
+                "lon": [0.0, 0.0001, 0.0002, 1.0, 1.0001, 1.0002, 20.0],
+            }
+        )
+
+        partition = fit_hdbscan_partition(
+            df,
+            min_cluster_frac=0.4,
+            min_cluster_size_min=2,
+            min_samples=2,
+            cluster_selection_method="leaf",
+        )
+
+        self.assertEqual(partition.params["cluster_selection_method"], "leaf")
+
     def test_noise_is_reported_outside_cluster_regions(self):
         df = pd.DataFrame(
             {

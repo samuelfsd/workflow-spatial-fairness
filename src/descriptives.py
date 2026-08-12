@@ -224,6 +224,11 @@ def partition_profile(partition: Partition, n_total: int) -> dict[str, Any]:
         "over_cap": sum(1 for region in partition.regions if region.get("over_cap")),
         "stat_cap_targets": int(partition.params.get("stat_cap_targets", 0)),
         "stat_cap_refusals": int(partition.params.get("stat_cap_refusals", 0)),
+        "stat_leaf_split_parents": int(
+            partition.params.get("stat_leaf_split_parents", 0)
+        ),
+        "stat_leaf_refusals": int(partition.params.get("stat_leaf_refusals", 0)),
+        "stat_leaf_noise_n": int(partition.params.get("stat_leaf_noise_n", 0)),
         "cluster_size_cv_before_stat_cap": partition.params.get(
             "cluster_size_cv_before_stat_cap"
         ),
