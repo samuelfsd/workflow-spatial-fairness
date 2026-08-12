@@ -11,6 +11,7 @@ SRC_DIR = Path(__file__).resolve().parents[1] / "src"
 sys.path.insert(0, str(SRC_DIR))
 
 from clustering.base import Partition
+from clustering.internal import InternalSubdivision
 from descriptives import (
     cluster_card_data,
     cluster_frame,
@@ -257,7 +258,11 @@ class ReadingHelpersTests(unittest.TestCase):
 class ClusterCardTests(unittest.TestCase):
     def test_subcluster_frame_reports_one_row_per_subcluster(self):
         types = np.array([1, 1, 0, 0])
-        frame = subcluster_frame([0, 1, 2, 3], types, lambda points: [[0, 1], [2, 3]])
+        frame = subcluster_frame(
+            [0, 1, 2, 3],
+            types,
+            lambda points: InternalSubdivision([[0, 1], [2, 3]], [], 2, 4),
+        )
         self.assertEqual(list(frame["n"]), [2, 2])
         np.testing.assert_allclose(frame["rho"], [1.0, 0.0])
 
@@ -283,7 +288,9 @@ class ClusterCardTests(unittest.TestCase):
             partition,
             types,
             cluster_label=0,
-            splitter=lambda points: [points[:2], points[2:]],
+            subdivider=lambda points: InternalSubdivision(
+                [points[:2], points[2:]], [], 2, len(points)
+            ),
             adjacency={0: [1, 2]},
             global_rate=0.75,
         )
@@ -308,7 +315,9 @@ class ClusterCardTests(unittest.TestCase):
             partition,
             types,
             cluster_label=0,
-            splitter=lambda points: [list(points)],
+            subdivider=lambda points: InternalSubdivision(
+                [list(points)], [], 2, len(points)
+            ),
             adjacency={0: [1]},
             global_rate=0.5,
         )
@@ -325,7 +334,9 @@ class ClusterCardTests(unittest.TestCase):
                 _partition([[0, 1]], 2),
                 types,
                 cluster_label=99,
-                splitter=lambda points: [list(points)],
+                subdivider=lambda points: InternalSubdivision(
+                    [list(points)], [], 2, len(points)
+                ),
                 adjacency={},
                 global_rate=0.5,
             )

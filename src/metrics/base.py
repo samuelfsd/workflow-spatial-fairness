@@ -14,6 +14,7 @@ from dataclasses import dataclass, field
 import numpy as np
 
 from clustering.base import Partition
+from clustering.internal import InternalSubdivision
 
 
 @dataclass
@@ -35,6 +36,7 @@ class MetricResult:
     supports_mc: bool = False
     standardized: bool = False
     needs: frozenset[str] = field(default_factory=frozenset)
+    per_cluster_metadata: dict[str, np.ndarray] = field(default_factory=dict)
 
 
 @dataclass
@@ -42,15 +44,15 @@ class MetricContext:
     """Shared resources handed to every metric so it never recomputes them.
 
     `adjacency` maps a cluster label to its Delaunay-neighbor labels (peer
-    baseline). `split_subclusters` splits a region's point ids into density
-    subclusters (within-cluster inequality, and the size cap).
+    baseline). `internal_subdivider` inspects a region at the parent partition's
+    density scale and preserves condensed subclusters and residue separately.
     """
 
     n_total: int
     p_total: int
     adjacency: dict[int, list[int]] = field(default_factory=dict)
     rng: np.random.Generator | None = None
-    split_subclusters: Callable[[list[int]], list[list[int]]] | None = None
+    internal_subdivider: Callable[[list[int]], InternalSubdivision] | None = None
 
 
 MetricFn = Callable[[Partition, np.ndarray, MetricContext], MetricResult]

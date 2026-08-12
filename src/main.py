@@ -8,6 +8,7 @@ from pathlib import Path
 from clustering.registry import partitioner_names
 from data_loading import dataset_names
 from experiments import ExperimentRunner
+from metrics.registry import primary_metric_names
 
 
 def _parse_fracs(value: str) -> tuple[float, ...]:
@@ -143,8 +144,15 @@ def build_parser() -> argparse.ArgumentParser:
     )
     explain.add_argument(
         "--primary-metric",
+        choices=primary_metric_names(),
         default="local_z",
         help="Metric that drives detection colors/significance (default: local_z).",
+    )
+    explain.add_argument(
+        "--exploration-profile",
+        choices=("full", "core", "none"),
+        default="full",
+        help="Exploration output: full (default), core global report, or snapshot only.",
     )
 
     all_cmd = subparsers.add_parser("all", help="Run the default reproduction suite.")
@@ -190,6 +198,7 @@ def main() -> None:
             signif_level=args.signif_level,
             metrics=args.metrics,
             primary_metric=args.primary_metric,
+            exploration_profile=args.exploration_profile,
         )
     elif args.command == "all":
         runner.run_unrestricted(

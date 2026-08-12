@@ -103,6 +103,13 @@ class VisualizationTests(unittest.TestCase):
                 "n": 2, "p": 1, "rho": 0.5, "rho_out": 0.4,
                 "sul": 0.1, "significant": False, "direction": "positive",
             },
+            {
+                "region": {"points": [6], "cluster_label": 3},
+                "n": 1, "p": 0, "rho": 0.0, "rho_out": 0.5,
+                "sul": float("nan"), "significant": False, "direction": None,
+                "evaluation_status": "não avaliado",
+                "evaluation_reason": "score_nao_finito",
+            },
         ]
 
         with tempfile.TemporaryDirectory() as tmp_dir:
@@ -114,6 +121,8 @@ class VisualizationTests(unittest.TestCase):
             self.assertIn("#d03b3b", html)
             self.assertIn("#0ca30c", html)
             self.assertIn("#bdbdbd", html)
+            self.assertIn("N\\u00e3o avaliadas", html)
+            self.assertIn("score_nao_finito", html)
 
 
 if __name__ == "__main__":

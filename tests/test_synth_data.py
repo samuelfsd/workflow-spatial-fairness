@@ -9,6 +9,7 @@ SRC_DIR = Path(__file__).resolve().parents[1] / "src"
 sys.path.insert(0, str(SRC_DIR))
 
 from clustering.hdbscan import fit_hdbscan_partition
+from clustering.internal import InternalSubdivision
 from metrics.base import MetricContext
 from metrics.neighbors import build_delaunay_adjacency
 from metrics.registry import get_metric
@@ -67,7 +68,9 @@ class GroundTruthTests(unittest.TestCase):
             p_total=int(cls.types.sum()),
             adjacency=build_delaunay_adjacency(cls.partition, df),
             rng=np.random.default_rng(0),
-            split_subclusters=lambda points: [list(points)],
+            internal_subdivider=lambda points: InternalSubdivision(
+                [list(points)], [], len(points), len(points)
+            ),
         )
         cls.local_z = get_metric("local_z")(cls.partition, cls.types, cls.ctx).per_cluster
         cls.sul = get_metric("sul")(cls.partition, cls.types, cls.ctx).per_cluster

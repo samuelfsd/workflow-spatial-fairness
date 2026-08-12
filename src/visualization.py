@@ -20,6 +20,7 @@ from palette import (
     COLOR_POSITIVE as _COLOR_POSITIVE,
     POINT_NEGATIVE,
     POINT_POSITIVE,
+    COLOR_NOT_EVALUATED,
 )
 
 
@@ -246,12 +247,26 @@ def save_detection_stage_map(
         "negative": folium.FeatureGroup("Significativas: injustiça negativa", show=True),
         "positive": folium.FeatureGroup("Significativas: injustiça positiva", show=True),
         "neutral": folium.FeatureGroup("Não significativas", show=True),
+        "not_evaluated": folium.FeatureGroup("Não avaliadas", show=True),
     }
-    colors = {"negative": _COLOR_NEGATIVE, "positive": _COLOR_POSITIVE, "neutral": _COLOR_NEUTRAL}
+    colors = {
+        "negative": _COLOR_NEGATIVE,
+        "positive": _COLOR_POSITIVE,
+        "neutral": _COLOR_NEUTRAL,
+        "not_evaluated": COLOR_NOT_EVALUATED,
+    }
 
     for result in region_results:
-        key = result["direction"] if result["significant"] else "neutral"
-        status = f"SIGNIFICANT ({result['direction']})" if result["significant"] else "not significant"
+        evaluated = result.get("evaluation_status", "avaliado") == "avaliado"
+        if not evaluated:
+            key = "not_evaluated"
+            status = f"não avaliado ({result.get('evaluation_reason') or 'motivo ausente'})"
+        else:
+            key = result["direction"] if result["significant"] else "neutral"
+            status = (
+                f"SIGNIFICANT ({result['direction']})"
+                if result["significant"] else "nada detectado"
+            )
         label = result["region"].get("cluster_label", "?")
         origin = result["region"].get("origin", "organic")
         score = result.get("score", result.get("sul"))
@@ -263,7 +278,7 @@ def save_detection_stage_map(
             f"rho_in={result['rho']:.3f} vs rho_out={result['rho_out']:.3f} "
             f"(global={global_rate:.3f}) | {status}"
         )
-        fill_opacity = 0.25 if result["significant"] else 0.08
+        fill_opacity = 0.25 if result["significant"] else (0.0 if not evaluated else 0.08)
         _add_region_hull(groups[key], df, result["region"], colors[key], tooltip, fill_opacity=fill_opacity)
 
     for group in groups.values():

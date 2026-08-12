@@ -12,6 +12,7 @@ import math
 import numpy as np
 
 from clustering.base import Partition
+from clustering.internal import InternalSubdivision
 from metrics.base import MetricContext, MetricResult
 from metrics.group_fairness import (
     calculate_gini,
@@ -105,17 +106,44 @@ def gini_subcluster_metric(
     does not subdivide has a single rate => Gini 0 (homogeneous inside). NOT
     Gini over raw binary outcomes (that is degenerate).
     """
-    splitter = ctx.split_subclusters or (lambda points: [list(points)])
+    subdivider = ctx.internal_subdivider or (
+        lambda points: InternalSubdivision(
+            subclusters=[list(points)],
+            residue=[],
+            min_cluster_size=max(2, len(points)),
+            parent_n=len(points),
+        )
+    )
     per_cluster = []
+    subdivisions = []
     for region in partition.regions:
-        rates = [get_simple_stats(sub, types)[2] for sub in splitter(region["points"])]
-        per_cluster.append(calculate_gini(rates))
+        subdivision = subdivider(list(region["points"]))
+        subdivisions.append(subdivision)
+        rates = [get_simple_stats(sub, types)[2] for sub in subdivision.subclusters]
+        per_cluster.append(calculate_gini(rates) if rates else float("nan"))
     return MetricResult(
         per_cluster=np.array(per_cluster, dtype=float),
         partition_scalar=None,
         signed=False,
         supports_mc=False,
         needs=frozenset({"subclusters"}),
+        per_cluster_metadata={
+            "internal_subdivision_status": np.array(
+                [item.status for item in subdivisions], dtype=object
+            ),
+            "internal_coverage_rate": np.array(
+                [item.coverage_rate for item in subdivisions], dtype=float
+            ),
+            "internal_residue_n": np.array(
+                [item.residue_n for item in subdivisions], dtype=int
+            ),
+            "internal_n_subclusters": np.array(
+                [len(item.subclusters) for item in subdivisions], dtype=int
+            ),
+            "internal_min_cluster_size": np.array(
+                [item.min_cluster_size for item in subdivisions], dtype=int
+            ),
+        },
     )
 
 
