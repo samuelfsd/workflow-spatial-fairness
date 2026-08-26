@@ -11,6 +11,7 @@ SRC_DIR = Path(__file__).resolve().parents[1] / "src"
 sys.path.insert(0, str(SRC_DIR))
 
 from benchmark_report import (
+    _advisor_candidate_results,
     build_canonical_tables,
     checkpoint_summaries_to_long,
     compare_compatible_results,
@@ -21,6 +22,36 @@ from benchmark_checkpoint import BenchmarkUnitSpec
 
 
 class BenchmarkReportTests(unittest.TestCase):
+    def test_advisor_candidate_section_uses_run_results(self):
+        rows = []
+        for dataset, metric, significant in (
+            ("semisynth", "local_z", 0),
+            ("semisynth", "peer_rate_difference", 0),
+            ("synth_unfair", "local_z", 2),
+            ("synth_unfair", "peer_rate_difference", 3),
+            ("lar", "peer_rate_difference", 15),
+        ):
+            common = {
+                "source": "local", "protocol": "standardized",
+                "dataset": dataset, "region_system": "hdbscan_frac_0.005",
+                "metric": metric,
+            }
+            rows.extend([
+                {**common, "quantity": "candidate_regions", "value": 41},
+                {**common, "quantity": "significant_regions", "value": significant},
+                {**common, "quantity": "best_region_n", "value": 20409},
+                {**common, "quantity": "best_indicator_value", "value": .8048},
+                {**common, "quantity": "best_reference_value", "value": .6280},
+                {**common, "quantity": "best_effect_value", "value": .1768},
+            ])
+
+        rendered = _advisor_candidate_results(pd.DataFrame(rows))
+
+        self.assertIn("Resultados executados das candidatas", rendered)
+        self.assertIn("Synth injusto", rendered)
+        self.assertIn("3/41", rendered)
+        self.assertIn("+17.68 p.p.", rendered)
+
     def test_checkpoint_discovery_requires_complete_manifest(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
