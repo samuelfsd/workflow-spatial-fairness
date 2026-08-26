@@ -46,6 +46,25 @@ QUANTITIES: dict[str, str] = {
     "best_effect_unit": "text",
 }
 KEYS = ["dataset", "experiment", "region_system", "metric", "quantity"]
+ADVISOR_RESULTS_MARKER = "<!-- BENCHMARK_CANDIDATE_RESULTS -->"
+ADVISOR_METRICS = (
+    "sul", "local_z", "peer_rate_difference",
+    "peer_log_rate_ratio", "peer_gini_gap",
+)
+ADVISOR_METRIC_LABELS = {
+    "sul": "SUL",
+    "local_z": "local-z",
+    "peer_rate_difference": "Δ taxa",
+    "peer_log_rate_ratio": "log-razão",
+    "peer_gini_gap": "gap Gini",
+}
+ADVISOR_DATASET_LABELS = {
+    "semisynth": "SemiSynth justo",
+    "synth_unfair": "Synth injusto",
+    "synth_fair": "Synth adicional justo",
+    "lar": "LAR",
+    "crime": "Crime",
+}
 
 
 def _markdown(frame: pd.DataFrame) -> str:
@@ -312,6 +331,122 @@ def build_canonical_tables(canonical: pd.DataFrame, comparisons: pd.DataFrame) -
     }
 
 
+def _advisor_candidate_results(canonical: pd.DataFrame) -> str:
+    """Render a compact, run-derived advisor section for the canonical HDBSCAN."""
+    required = {"source", "protocol", "dataset", "region_system", "metric", "quantity", "value"}
+    if canonical.empty or not required.issubset(canonical.columns):
+        return "## Resultados executados das candidatas\n\n_Sem resultados padronizados disponíveis._\n"
+    frame = canonical[
+        canonical["source"].eq("local")
+        & canonical["protocol"].eq("standardized")
+        & canonical["region_system"].eq("hdbscan_frac_0.005")
+        & canonical["metric"].isin(ADVISOR_METRICS)
+    ].copy()
+    if frame.empty:
+        return "## Resultados executados das candidatas\n\n_Sem resultados padronizados disponíveis._\n"
+
+    dataset_order = [
+        name for name in ADVISOR_DATASET_LABELS
+        if name in set(frame["dataset"])
+    ]
+    significant = frame[frame["quantity"].eq("significant_regions")].copy()
+    significant["value"] = pd.to_numeric(significant["value"], errors="coerce")
+    matrix = significant.pivot_table(
+        index="dataset", columns="metric", values="value", aggfunc="first"
+    )
+    lines = [
+        "## Resultados executados das candidatas",
+        "",
+        "Configuração comum: HDBSCAN `frac=0,005`; cada indicador usa seu próprio ",
+        "limiar Monte Carlo. As células abaixo são **regiões significativas / regiões ",
+        "avaliadas**, não acurácia.",
+        "",
+        "| Dataset | SUL | local-z | Δ taxa | log-razão | gap Gini |",
+        "|---|---:|---:|---:|---:|---:|",
+    ]
+    for dataset in dataset_order:
+        dataset_rows = frame[frame["dataset"].eq(dataset)]
+        candidates = pd.to_numeric(
+            dataset_rows.loc[
+                dataset_rows["quantity"].eq("candidate_regions"), "value"
+            ],
+            errors="coerce",
+        )
+        denominator = int(candidates.dropna().iloc[0]) if candidates.notna().any() else 0
+        cells = []
+        for metric in ADVISOR_METRICS:
+            value = matrix.loc[dataset, metric] if dataset in matrix.index and metric in matrix.columns else float("nan")
+            cells.append(
+                f"{int(value)}/{denominator}" if pd.notna(value) else "—"
+            )
+        lines.append(
+            f"| {ADVISOR_DATASET_LABELS.get(dataset, dataset)} | "
+            + " | ".join(cells) + " |"
+        )
+
+    quantities = {
+        "significant_regions", "best_region_n", "best_indicator_value",
+        "best_reference_value", "best_effect_value",
+    }
+    extremes = frame[
+        frame["dataset"].isin(["lar", "crime"])
+        & frame["metric"].isin(ADVISOR_METRICS[2:])
+        & frame["quantity"].isin(quantities)
+    ].pivot_table(
+        index=["dataset", "metric"], columns="quantity", values="value",
+        aggfunc="first",
+    ).reset_index()
+    lines.extend([
+        "",
+        "### Extremo de cada candidata nos dados reais",
+        "",
+        "| Dataset | Candidata | Significativas | Região extrema | Efeito observado |",
+        "|---|---|---:|---|---|",
+    ])
+    for dataset in ("lar", "crime"):
+        for metric in ADVISOR_METRICS[2:]:
+            selected = extremes[
+                extremes["dataset"].eq(dataset) & extremes["metric"].eq(metric)
+            ]
+            if selected.empty:
+                continue
+            row = selected.iloc[0]
+            count = pd.to_numeric(pd.Series([row.get("significant_regions")]), errors="coerce").iloc[0]
+            n = pd.to_numeric(pd.Series([row.get("best_region_n")]), errors="coerce").iloc[0]
+            indicator = pd.to_numeric(pd.Series([row.get("best_indicator_value")]), errors="coerce").iloc[0]
+            reference = pd.to_numeric(pd.Series([row.get("best_reference_value")]), errors="coerce").iloc[0]
+            effect = pd.to_numeric(pd.Series([row.get("best_effect_value")]), errors="coerce").iloc[0]
+            region = (
+                f"n={int(n):,}; {indicator:.2%} vs. {reference:.2%}".replace(",", ".")
+                if pd.notna(n) and n > 0 and pd.notna(indicator) and pd.notna(reference)
+                else "não avaliável"
+            )
+            if metric == "peer_rate_difference" and pd.notna(effect):
+                rendered_effect = f"{effect * 100:+.2f} p.p."
+            elif metric == "peer_log_rate_ratio" and pd.notna(effect):
+                rendered_effect = f"log-razão {effect:+.3f}"
+            elif pd.notna(effect):
+                rendered_effect = f"gap {effect:+.3f}"
+            else:
+                rendered_effect = "—"
+            lines.append(
+                f"| {ADVISOR_DATASET_LABELS[dataset]} | "
+                f"{ADVISOR_METRIC_LABELS[metric]} | {int(count) if pd.notna(count) else '—'} | "
+                f"{region} | {rendered_effect} |"
+            )
+    lines.extend([
+        "",
+        "**Leitura:** nos controles justos, silêncio é o veredito esperado; no Synth ",
+        "injusto, alguma detecção é o veredito esperado. Esses CSVs não possuem máscara ",
+        "independente por ponto, portanto esta tabela não fornece TP/FP/FN/TN. Em LAR e ",
+        "Crime não há gabarito espacial: diferenças entre indicadores descrevem ",
+        "comportamento, não superioridade. O gap Gini é exploratório e seu sinal não ",
+        "significa favorecimento ou prejuízo.",
+        "",
+    ])
+    return "\n".join(lines)
+
+
 def _file_sha256(path: Path) -> str:
     digest = hashlib.sha256()
     with path.open("rb") as source:
@@ -369,7 +504,17 @@ def publish_initial_report(
             figures = render_benchmark_figures(tables, staging / "figures")
         advisor_route = Path("docs/ROTEIRO_ORIENTADORES.md")
         if advisor_route.exists():
-            shutil.copyfile(advisor_route, staging / "RESUMO_ORIENTADORES.md")
+            advisor_text = advisor_route.read_text(encoding="utf-8")
+            candidate_results = _advisor_candidate_results(canonical)
+            if ADVISOR_RESULTS_MARKER in advisor_text:
+                advisor_text = advisor_text.replace(
+                    ADVISOR_RESULTS_MARKER, candidate_results
+                )
+            else:
+                advisor_text += "\n\n" + candidate_results
+            (staging / "RESUMO_ORIENTADORES.md").write_text(
+                advisor_text, encoding="utf-8"
+            )
         if render_maps:
             from benchmark_maps import render_comparative_maps
             render_comparative_maps(tables["canonical"], regions if regions is not None else pd.DataFrame(), staging / "maps")
