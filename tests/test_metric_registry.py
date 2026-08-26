@@ -13,8 +13,10 @@ from clustering.internal import InternalSubdivision
 from metrics.base import MetricContext, MetricResult
 from metrics.registry import (
     METRICS,
+    candidate_metric_names,
     evaluate_primary,
     get_metric,
+    get_metric_definition,
     get_primary_capabilities,
     metric_names,
     primary_metric_names,
@@ -46,6 +48,29 @@ def _context(types: np.ndarray) -> MetricContext:
 
 
 class MetricRegistryTests(unittest.TestCase):
+    def test_candidate_capabilities_have_one_registry_source(self):
+        self.assertEqual(
+            set(candidate_metric_names()),
+            {"peer_rate_difference", "peer_log_rate_ratio", "peer_gini_gap"},
+        )
+        rate = get_metric_definition("peer_rate_difference")
+        self.assertEqual(rate.needs, frozenset({"neighbors"}))
+        self.assertTrue(rate.outcome_direction)
+        self.assertTrue(rate.confirmatory_candidate)
+        gini = get_metric_definition("peer_gini_gap")
+        self.assertEqual(gini.needs, frozenset({"neighbors", "subclusters"}))
+        self.assertFalse(gini.outcome_direction)
+        self.assertFalse(gini.confirmatory_candidate)
+
+    def test_registry_needs_match_every_metric_result_contract(self):
+        partition = _tiny_partition()
+        types = np.array([1, 0, 1, 0, 1])
+        ctx = _context(types)
+        for name in metric_names():
+            with self.subTest(metric=name):
+                result = get_metric(name)(partition, types, ctx)
+                self.assertEqual(get_metric_definition(name).needs, result.needs)
+
     def test_unknown_metric_raises(self):
         with self.assertRaises(ValueError):
             get_metric("nope")
@@ -147,6 +172,88 @@ class MetricRegistryTests(unittest.TestCase):
         result = get_metric("local_z")(partition, types, ctx)
         self.assertTrue(np.all(np.isnan(result.per_cluster)))
 
+    def test_peer_rate_candidates_keep_effect_size_separate_from_standardized_evidence(self):
+        # Same worked example as local-z: cluster rates .30, .50 and .50.
+        # The difference candidate reports percentage-rate effect in native units;
+        # the ratio candidate uses a continuity-corrected log ratio centred at 0.
+        types = np.zeros(300, dtype=int)
+        types[0:30] = 1
+        types[100:150] = 1
+        types[200:250] = 1
+        partition = Partition(
+            method="fake",
+            params={},
+            labels=np.repeat(np.arange(3), 100),
+            regions=[
+                {"points": list(range(0, 100)), "cluster_label": 0},
+                {"points": list(range(100, 200)), "cluster_label": 1},
+                {"points": list(range(200, 300)), "cluster_label": 2},
+            ],
+        )
+        ctx = MetricContext(
+            n_total=300,
+            p_total=130,
+            adjacency={0: [1, 2], 1: [0, 2], 2: [0, 1]},
+        )
+
+        difference = get_metric("peer_rate_difference")(partition, types, ctx)
+        np.testing.assert_allclose(difference.per_cluster, [-0.20, 0.10, 0.10])
+        self.assertTrue(difference.signed)
+        self.assertTrue(difference.supports_mc)
+        self.assertFalse(difference.standardized)
+
+        ratio = get_metric("peer_log_rate_ratio")(partition, types, ctx)
+        expected = [
+            np.log((30.5 / 101) / (100.5 / 201)),
+            np.log((50.5 / 101) / (80.5 / 201)),
+            np.log((50.5 / 101) / (80.5 / 201)),
+        ]
+        np.testing.assert_allclose(ratio.per_cluster, expected)
+        self.assertTrue(ratio.signed)
+        self.assertTrue(ratio.supports_mc)
+        self.assertFalse(ratio.standardized)
+
+    def test_peer_gini_gap_compares_internal_gini_with_weighted_peer_ginis(self):
+        # c0 has internal subcluster rates [0, 1] => Gini .5.
+        # c1 and c2 have [0, 0] and [1, 1] => Gini 0.
+        # In a triangle of equally sized clusters: gaps [.5, -.25, -.25].
+        types = np.array([
+            0, 0, 1, 1,
+            0, 0, 0, 0,
+            1, 1, 1, 1,
+        ])
+        partition = Partition(
+            method="fake",
+            params={},
+            labels=np.repeat(np.arange(3), 4),
+            regions=[
+                {"points": [0, 1, 2, 3], "cluster_label": 0},
+                {"points": [4, 5, 6, 7], "cluster_label": 1},
+                {"points": [8, 9, 10, 11], "cluster_label": 2},
+            ],
+        )
+        ctx = MetricContext(
+            n_total=12,
+            p_total=6,
+            adjacency={0: [1, 2], 1: [0, 2], 2: [0, 1]},
+            internal_subdivider=lambda points: InternalSubdivision(
+                [points[:2], points[2:]], [], 2, len(points)
+            ),
+        )
+
+        result = get_metric("peer_gini_gap")(partition, types, ctx)
+        np.testing.assert_allclose(result.per_cluster, [0.5, -0.25, -0.25])
+        np.testing.assert_allclose(
+            result.per_cluster_metadata["internal_gini"], [0.5, 0.0, 0.0]
+        )
+        np.testing.assert_allclose(
+            result.per_cluster_metadata["peer_gini"], [0.0, 0.25, 0.25]
+        )
+        self.assertTrue(result.signed)
+        self.assertTrue(result.supports_mc)
+        self.assertFalse(result.standardized)
+        self.assertEqual(result.needs, frozenset({"neighbors", "subclusters"}))
+
     def test_local_z_is_the_only_standardized_metric(self):
         # The analytic (Sidak) threshold only applies to metrics expressed in
         # standard-error units, so exactly one metric may claim it.
@@ -163,7 +270,10 @@ class MetricRegistryTests(unittest.TestCase):
         self.assertEqual(set(primary_metric_names()), {"local_z", "sul"})
         self.assertEqual(get_primary_capabilities("local_z").rate_reference, "peers")
         self.assertEqual(get_primary_capabilities("sul").rate_reference, "outside")
-        for name in ("gini", "gini_subcluster", "meanvar", "dp_difference", "dp_ratio"):
+        for name in (
+            "gini", "gini_subcluster", "meanvar", "dp_difference", "dp_ratio",
+            "peer_rate_difference", "peer_log_rate_ratio", "peer_gini_gap",
+        ):
             with self.subTest(metric=name), self.assertRaises(ValueError):
                 get_primary_capabilities(name)
 

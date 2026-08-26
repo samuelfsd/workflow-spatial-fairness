@@ -65,7 +65,7 @@ DATASET_SPECS: dict[str, DatasetSpec] = {
     ),
     "crime": DatasetSpec(
         "crime", "Crime.csv", "pred", 0.005, 0.1, 0.005,
-        ((20, 20),), "predição de crime", "ausência de predição de crime", "desfavorável",
+        ((20, 20),), "verdadeiro positivo", "falso negativo", "favorável",
     ),
     "semisynth": DatasetSpec(
         "semisynth", "Semisynth.csv", "label", 0.01, 0.2, 0.01,
