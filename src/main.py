@@ -6,9 +6,12 @@ import argparse
 from pathlib import Path
 
 from clustering.registry import partitioner_names
-from data_loading import dataset_names
+from data_loading import dataset_names, load_dataset
 from experiments import ExperimentRunner
 from metrics.registry import primary_metric_names
+
+
+SACHARIDIS_DATASETS = ("lar", "crime", "semisynth", "synth_fair", "synth_unfair")
 
 
 def _parse_fracs(value: str) -> tuple[float, ...]:
@@ -163,12 +166,86 @@ def build_parser() -> argparse.ArgumentParser:
     all_cmd.add_argument("--signif-level", type=float, default=0.005)
     all_cmd.add_argument("--notebook-grid", action="store_true", help="Use 20x20 grids for one-partitioning runs.")
 
+    benchmark = subparsers.add_parser(
+        "benchmark-sacharidis",
+        help="Reproduce and compare the quantitative Sacharidis benchmark with resumable checkpoints.",
+    )
+    benchmark.add_argument("--out", type=Path, default=Path("outputs/benchmark_sacharidis"))
+    benchmark.add_argument("--dataset", choices=["all", *SACHARIDIS_DATASETS], default="all")
+    benchmark.add_argument("--phase", choices=("reproduce", "compare", "report", "all"), default="all")
+    benchmark.add_argument("--seed", type=int, default=42)
+    benchmark.add_argument("--resume", action=argparse.BooleanOptionalAction, default=True)
+    benchmark.add_argument("--maps", action=argparse.BooleanOptionalAction, default=False)
+    benchmark.add_argument("--scan-worlds", type=int, default=200)
+    benchmark.add_argument("--grid-worlds", type=int, default=1000)
+    benchmark.add_argument("--standardized-worlds", type=int, default=1000)
+    benchmark.add_argument("--random-partitionings", type=int, default=100)
+    benchmark.add_argument("--kmeans-seeds", type=int, default=100)
+    benchmark.add_argument("--signif-level", type=float, default=0.005)
+
+    repeated = subparsers.add_parser(
+        "benchmark-repeated",
+        help="Run a small trial, an explicitly confirmed official battery, or a checkpoint-only report.",
+    )
+    repeated.add_argument("--plan", type=Path, default=Path("benchmarks/repeated/plan.draft.json"))
+    repeated.add_argument("--out", type=Path, default=Path("outputs/benchmark_repeated"))
+    repeated.add_argument("--phase", choices=("trial", "run", "report"), required=True)
+    repeated.add_argument("--confirm-official", action="store_true")
+    repeated.add_argument(
+        "--coordinate-source-dataset", choices=dataset_names(), default=None,
+        help="Dataset used only as a source of coordinates for the realistic irregular geography; outcomes are ignored.",
+    )
+
     return parser
 
 
 def main() -> None:
     parser = build_parser()
     args = parser.parse_args()
+    if args.command == "benchmark-sacharidis":
+        from benchmark_initial import DEFAULT_DATASETS, InitialBenchmarkConfig, run_initial_benchmark
+        from benchmark_sacharidis import SacharidisProtocol
+
+        datasets = DEFAULT_DATASETS if args.dataset == "all" else (args.dataset,)
+        protocol = SacharidisProtocol(
+            reproduction_scan_worlds=args.scan_worlds,
+            grid_worlds=args.grid_worlds,
+            standardized_worlds=args.standardized_worlds,
+            random_partitionings=args.random_partitionings,
+            kmeans_seeds=args.kmeans_seeds,
+            signif_level=args.signif_level,
+        )
+        destination = run_initial_benchmark(InitialBenchmarkConfig(
+            output_root=args.out, datasets=datasets, phase=args.phase, seed=args.seed,
+            resume=args.resume, maps=args.maps, protocol=protocol,
+        ))
+        print(f"Benchmark written to {destination}")
+        return
+    if args.command == "benchmark-repeated":
+        from repeated_workflow import load_repeated_plan, run_repeated_workflow
+
+        coordinate_source = None
+        plan = load_repeated_plan(args.plan)
+        source_name = args.coordinate_source_dataset or plan.coordinate_source_dataset
+        if source_name != plan.coordinate_source_dataset:
+            parser.error(
+                "--coordinate-source-dataset deve coincidir com "
+                f"coordinate_source_dataset={plan.coordinate_source_dataset!r} do plano"
+            )
+        if args.phase != "report":
+            source_dataset = load_dataset(source_name)
+            coordinate_source = source_dataset.df[["lat", "lon"]].copy()
+            coordinate_source.attrs["dataset_name"] = source_dataset.name
+            coordinate_source.attrs["source_name"] = (
+                f"dataset:{source_dataset.name}@sha256:{source_dataset.source_sha256}"
+            )
+        destination = run_repeated_workflow(
+            args.plan, args.out, phase=args.phase,
+            confirm_official=args.confirm_official,
+            coordinate_source=coordinate_source,
+        )
+        print(f"Repeated benchmark written to {destination}")
+        return
     runner = _runner(args)
 
     if args.command == "unrestricted":

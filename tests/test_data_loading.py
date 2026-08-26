@@ -40,8 +40,9 @@ class DataLoadingTests(unittest.TestCase):
     def test_real_and_synthetic_semantics_are_not_conflated(self):
         self.assertEqual(DATASET_SPECS["lar"].positive_label, "pedido aprovado")
         self.assertEqual(DATASET_SPECS["lar"].desirability, "favorável")
-        self.assertEqual(DATASET_SPECS["crime"].positive_label, "predição de crime")
-        self.assertEqual(DATASET_SPECS["crime"].desirability, "desfavorável")
+        self.assertEqual(DATASET_SPECS["crime"].positive_label, "verdadeiro positivo")
+        self.assertEqual(DATASET_SPECS["crime"].negative_label, "falso negativo")
+        self.assertEqual(DATASET_SPECS["crime"].desirability, "favorável")
         for name in ("semisynth", "synth_fair", "synth_unfair", "synth_local"):
             self.assertEqual(DATASET_SPECS[name].desirability, "não declarada")
 

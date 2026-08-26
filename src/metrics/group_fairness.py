@@ -188,6 +188,7 @@ def simulate_null_max_suls(
     n_total: int,
     p_total: int,
     seed: int | None = None,
+    direction: str = "both",
 ) -> np.ndarray:
     """Return the max SUL per alternate world (the Monte Carlo null distribution)."""
     if n_alt_worlds <= 0 or not regions:
@@ -197,7 +198,9 @@ def simulate_null_max_suls(
     alt_max_scores = []
     for _ in range(n_alt_worlds):
         alt_types = get_random_types(n_total, p_total, rng=rng)
-        _, alt_max, _ = scan_regions(regions, alt_types, n_total, p_total)
+        _, alt_max, _ = scan_regions(
+            regions, alt_types, n_total, p_total, direction=direction
+        )
         alt_max_scores.append(alt_max)
 
     return np.asarray(alt_max_scores, dtype=float)
@@ -210,9 +213,12 @@ def get_signif_threshold(
     n_total: int,
     p_total: int,
     seed: int | None = None,
+    direction: str = "both",
 ) -> float:
     """Return the Monte Carlo SUL threshold used by the authors."""
-    alt_max_scores = simulate_null_max_suls(n_alt_worlds, regions, n_total, p_total, seed=seed)
+    alt_max_scores = simulate_null_max_suls(
+        n_alt_worlds, regions, n_total, p_total, seed=seed, direction=direction
+    )
     if len(alt_max_scores) == 0:
         return 0.0
 

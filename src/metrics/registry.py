@@ -20,22 +20,65 @@ from metrics.builtin import (
     gini_subcluster_metric,
     local_z_metric,
     meanvar_metric,
+    peer_gini_gap_metric,
+    peer_log_rate_ratio_metric,
+    peer_rate_difference_metric,
     sul_metric,
 )
 
-METRICS: dict[str, MetricFn] = {
-    "sul": sul_metric,
-    "local_z": local_z_metric,
-    "gini": gini_metric,
-    "meanvar": meanvar_metric,
-    "gini_subcluster": gini_subcluster_metric,
-    "dp_difference": dp_difference_metric,
-    "dp_ratio": dp_ratio_metric,
-}
-
-
 RateReference = Literal["peers", "outside"]
 DirectionRule = Literal["score_sign", "rate_contrast"]
+
+
+@dataclass(frozen=True)
+class MetricDefinition:
+    """Pre-compute capabilities kept on the same one-line registry entry."""
+
+    compute: MetricFn
+    needs: frozenset[str] = frozenset()
+    benchmark_candidate: bool = False
+    outcome_direction: bool | None = None
+    confirmatory_candidate: bool = False
+    candidate_kind: str | None = None
+
+
+METRICS: dict[str, MetricDefinition | MetricFn] = {
+    "sul": MetricDefinition(sul_metric),
+    "local_z": MetricDefinition(
+        local_z_metric, needs=frozenset({"neighbors"})
+    ),
+    "gini": MetricDefinition(gini_metric),
+    "meanvar": MetricDefinition(meanvar_metric),
+    "gini_subcluster": MetricDefinition(
+        gini_subcluster_metric, needs=frozenset({"subclusters"})
+    ),
+    "dp_difference": MetricDefinition(dp_difference_metric),
+    "dp_ratio": MetricDefinition(dp_ratio_metric),
+    "peer_rate_difference": MetricDefinition(
+        peer_rate_difference_metric,
+        needs=frozenset({"neighbors"}),
+        benchmark_candidate=True,
+        outcome_direction=True,
+        confirmatory_candidate=True,
+        candidate_kind="rate_difference",
+    ),
+    "peer_log_rate_ratio": MetricDefinition(
+        peer_log_rate_ratio_metric,
+        needs=frozenset({"neighbors"}),
+        benchmark_candidate=True,
+        outcome_direction=True,
+        confirmatory_candidate=True,
+        candidate_kind="log_rate_ratio",
+    ),
+    "peer_gini_gap": MetricDefinition(
+        peer_gini_gap_metric,
+        needs=frozenset({"neighbors", "subclusters"}),
+        benchmark_candidate=True,
+        outcome_direction=False,
+        confirmatory_candidate=False,
+        candidate_kind="gini_gap",
+    ),
+}
 
 
 @dataclass(frozen=True)
@@ -67,6 +110,20 @@ PRIMARY_CAPABILITIES: dict[str, PrimaryCapabilities] = {
 
 def metric_names() -> list[str]:
     return list(METRICS)
+
+
+def get_metric_definition(name: str) -> MetricDefinition:
+    if name not in METRICS:
+        raise ValueError(f"Unknown metric: {name}. Available: {metric_names()}")
+    entry = METRICS[name]
+    return entry if isinstance(entry, MetricDefinition) else MetricDefinition(entry)
+
+
+def candidate_metric_names() -> list[str]:
+    return [
+        name for name in METRICS
+        if get_metric_definition(name).benchmark_candidate
+    ]
 
 
 def primary_metric_names() -> list[str]:
@@ -130,6 +187,4 @@ def evaluate_primary(
 
 
 def get_metric(name: str) -> MetricFn:
-    if name not in METRICS:
-        raise ValueError(f"Unknown metric: {name}. Available: {metric_names()}")
-    return METRICS[name]
+    return get_metric_definition(name).compute
