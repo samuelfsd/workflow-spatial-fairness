@@ -26,6 +26,26 @@ class RepeatedWorkflowTests(unittest.TestCase):
             with self.assertRaisesRegex(PermissionError, "confirm"):
                 run_repeated_workflow(path, Path(tmp) / "out", phase="run", confirm_official=False)
 
+    def test_report_accepts_checkpoints_written_by_trial(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            path = root / "plan.json"
+            path.write_text(json.dumps({
+                "schema_version": 1,
+                "plan_id": "performance",
+                "n_points": 100,
+                "reference_grid": [4, 4],
+                "geometry_seeds": [1],
+                "null_worlds": 2,
+                "bootstrap_repetitions": 2,
+                "methods": ["hdbscan_local_z"],
+            }))
+
+            run_repeated_workflow(path, root / "out", phase="trial")
+            report = run_repeated_workflow(path, root / "out", phase="report")
+
+            self.assertTrue(report.exists())
+
 
 if __name__ == "__main__":
     unittest.main()

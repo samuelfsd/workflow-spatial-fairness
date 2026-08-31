@@ -45,11 +45,13 @@ class BenchmarkFigureTests(unittest.TestCase):
         self.assertIn("Taxa local", titles)
         self.assertIn("Carga", titles)
 
-    def test_synthetic_matrix_uses_wrapped_horizontal_detector_labels(self):
+    def test_synthetic_matrix_puts_short_scenarios_on_horizontal_axis(self):
         _, figure = build_benchmark_figures({"canonical": self.canonical})[0]
-        ticks = figure.axes[0].get_xticklabels()
-        self.assertTrue(all(tick.get_rotation() == 0 for tick in ticks))
-        self.assertTrue(any("\n" in tick.get_text() for tick in ticks))
+        x_ticks = figure.axes[0].get_xticklabels()
+        y_ticks = figure.axes[0].get_yticklabels()
+        self.assertTrue(all(tick.get_rotation() == 0 for tick in x_ticks))
+        self.assertTrue(any("Synth" in tick.get_text() for tick in x_ticks))
+        self.assertTrue(any("Grade" in tick.get_text() for tick in y_ticks))
 
     def test_figures_aggregate_long_tables_instead_of_labeling_every_record(self):
         noisy_rows = [

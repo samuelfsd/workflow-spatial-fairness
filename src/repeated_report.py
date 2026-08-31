@@ -4,8 +4,10 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import shutil
 import tempfile
+from itertools import combinations
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Mapping
@@ -54,6 +56,10 @@ def build_method_agreement(results: pd.DataFrame) -> tuple[pd.DataFrame, pd.Data
     }
     if not required.issubset(results.columns):
         return pd.DataFrame(), pd.DataFrame()
+    mask_column = (
+        "all_detected_point_mask"
+        if "all_detected_point_mask" in results.columns else None
+    )
     point_column = (
         "all_detected_point_ids"
         if "all_detected_point_ids" in results.columns
@@ -61,7 +67,7 @@ def build_method_agreement(results: pd.DataFrame) -> tuple[pd.DataFrame, pd.Data
         if "detected_point_ids" in results.columns
         else None
     )
-    if point_column is None:
+    if point_column is None and mask_column is None:
         return pd.DataFrame(), pd.DataFrame()
     realization = [
         "family", "layer", "scenario_id", "condition",
@@ -69,11 +75,35 @@ def build_method_agreement(results: pd.DataFrame) -> tuple[pd.DataFrame, pd.Data
     ]
     rows = []
     for keys, group in results.groupby(realization, sort=True, dropna=False):
-        method_points = {
-            str(row.method_id): _point_ids(getattr(row, point_column))
-            for row in group.itertuples()
-        }
-        comparison = compare_method_detection_sets(method_points)
+        if mask_column is not None:
+            method_masks = {
+                str(row.method_id): int.from_bytes(
+                    getattr(row, mask_column), "little"
+                )
+                for row in group.itertuples()
+            }
+            comparisons = []
+            for first, second in combinations(sorted(method_masks), 2):
+                first_mask, second_mask = method_masks[first], method_masks[second]
+                intersection = (first_mask & second_mask).bit_count()
+                first_n, second_n = first_mask.bit_count(), second_mask.bit_count()
+                union = (first_mask | second_mask).bit_count()
+                comparisons.append({
+                    "first_method": first, "second_method": second,
+                    "first_detected_n": first_n, "second_detected_n": second_n,
+                    "intersection_n": intersection,
+                    "first_only_n": first_n - intersection,
+                    "second_only_n": second_n - intersection,
+                    "union_n": union,
+                    "point_jaccard": intersection / union if union else 1.0,
+                })
+            comparison = pd.DataFrame(comparisons)
+        else:
+            method_points = {
+                str(row.method_id): _point_ids(getattr(row, point_column))
+                for row in group.itertuples()
+            }
+            comparison = compare_method_detection_sets(method_points)
         if comparison.empty:
             continue
         for column, value in zip(realization, keys, strict=True):
@@ -102,6 +132,10 @@ def build_method_agreement(results: pd.DataFrame) -> tuple[pd.DataFrame, pd.Data
 
 def build_repeated_tables(results: pd.DataFrame, *, n_bootstrap: int = 10000, seed: int = 43000) -> dict[str, pd.DataFrame]:
     results = results.copy()
+    agreement_raw, method_agreement = build_method_agreement(results)
+    results = results.drop(
+        columns=["all_detected_point_mask"], errors="ignore"
+    )
     if "evaluation_coverage" not in results and "coverage" in results:
         results["evaluation_coverage"] = results["coverage"]
     if "detected_coverage" not in results:
@@ -221,7 +255,6 @@ def build_repeated_tables(results: pd.DataFrame, *, n_bootstrap: int = 10000, se
             "realizations",
         ]
     ].copy()
-    agreement_raw, method_agreement = build_method_agreement(results)
     aggregate["scan_redundancy"] = aggregate["raw_significant_regions"] - aggregate["consolidated_regions"]
     operational = aggregate[group + [
         "coverage", "evaluation_coverage", "detected_coverage",
@@ -294,6 +327,7 @@ def _draw_matrix(
     title: str,
     annotations: np.ndarray | None = None,
     categorical: bool = False,
+    percent: bool = False,
 ) -> None:
     shown = values
     if categorical:
@@ -314,7 +348,8 @@ def _draw_matrix(
             if not np.isnan(value):
                 label = (
                     f"{'✓' if value <= .01 else '×'} {value:.3f}"
-                    if categorical else f"{value:.2f}"
+                    if categorical else f"{value * 100:.2f}%" if percent
+                    else f"{value:.3f}"
                 )
                 color = "white" if shown[row, column] >= .55 else "#111827"
                 ax.text(column, row, label, ha="center", va="center", fontsize=9, color=color)
@@ -340,6 +375,7 @@ def _figures(tables: dict[str, pd.DataFrame]):
     _draw_matrix(
         ax, recovery_values, methods, families,
         title="2. Recuperação correta média — cenários injustos do núcleo",
+        percent=True,
     )
     fig.tight_layout()
     figures.append(("02_recuperacao", fig))
@@ -354,7 +390,7 @@ def _figures(tables: dict[str, pd.DataFrame]):
         strict=True,
     ):
         values, methods, families = _matrix(core, metric)
-        _draw_matrix(axis, values, methods, families, title=title)
+        _draw_matrix(axis, values, methods, families, title=title, percent=True)
     fig.suptitle("3. Localização ponto a ponto — média do núcleo", y=.98)
     fig.tight_layout(rect=(0, 0, 1, .95))
     figures.append(("03_localizacao", fig))
@@ -369,13 +405,111 @@ def _figures(tables: dict[str, pd.DataFrame]):
             strict=True,
         ):
             values, methods, families = _matrix(exploratory, metric)
-            _draw_matrix(axis, values, methods, families, title=title)
+            _draw_matrix(axis, values, methods, families, title=title, percent=True)
         fig.suptitle(
             "4. Braço exploratório — heterogeneidade interna relativa",
             y=.98,
         )
         fig.tight_layout(rect=(0, 0, 1, .94))
         figures.append(("04_exploratorio_gini", fig))
+
+    sensitivities = tables.get("sensitivities", pd.DataFrame())
+    if not sensitivities.empty:
+        effect = sensitivities[
+            sensitivities["scenario_id"].astype(str).str.contains(
+                r"sensitivity__uniform__local_positive__e(?:5|10|20|30)__s0\.02__circle__h0\.005",
+                regex=True,
+            )
+            & sensitivities["confirmatory_method"].eq(True)
+        ].copy()
+        if not effect.empty:
+            effect["effect_pp"] = effect["scenario_id"].map(
+                lambda value: float(re.search(r"__e([0-9.]+)__", str(value)).group(1))
+            )
+            fig, axes = plt.subplots(1, 2, figsize=(12, 7.2), sharex=True)
+            for method in _METHOD_ORDER:
+                rows = effect[effect["method_id"].eq(method)].sort_values("effect_pp")
+                if rows.empty:
+                    continue
+                label = _METHOD_LABELS.get(method, method)
+                axes[0].plot(rows["effect_pp"], rows["f1"] * 100, marker="o", label=label)
+                axes[1].plot(
+                    rows["effect_pp"], rows["correct_recovery"] * 100,
+                    marker="o", label=label,
+                )
+            for axis, title, ylabel in (
+                (axes[0], "F1 ponto a ponto", "F1 médio (%)"),
+                (axes[1], "Recuperação correta", "Realizações aprovadas (%)"),
+            ):
+                axis.set_title(title)
+                axis.set_xlabel("Efeito plantado (p.p.)")
+                axis.set_ylabel(ylabel)
+                axis.set_xticks([5, 10, 20, 30])
+                axis.grid(alpha=.3)
+            handles, labels = axes[0].get_legend_handles_labels()
+            fig.legend(
+                handles, labels, loc="upper center", bbox_to_anchor=(.5, .91),
+                ncol=3, frameon=False,
+            )
+            fig.suptitle(
+                "5. Sensibilidade ao efeito — alvo circular de 2% na geografia uniforme",
+                y=.985,
+            )
+            fig.tight_layout(rect=(0, 0, 1, .76))
+            figures.append(("05_sensibilidade_efeito", fig))
+
+    confusion = tables.get("point_confusion", pd.DataFrame())
+    strong_id = "sensitivity__uniform__local_positive__e30__s0.02__circle__h0.005"
+    strong = confusion[confusion.get("scenario_id", pd.Series(dtype=str)).eq(strong_id)].copy()
+    if not strong.empty:
+        strong["method_order"] = strong["method_id"].map(
+            {method: index for index, method in enumerate(_METHOD_ORDER)}
+        ).fillna(99)
+        strong = strong.sort_values("method_order")
+        labels = [_METHOD_LABELS.get(method, method) for method in strong["method_id"]]
+        y = np.arange(len(strong))
+        fig, axes = plt.subplots(1, 2, figsize=(13.5, 7.6))
+        tp = strong["true_positive_n"].to_numpy(float)
+        fn = strong["false_negative_n"].to_numpy(float)
+        axes[0].barh(y, tp, color=CATEGORICAL[0], label="Alvo recuperado")
+        axes[0].barh(y, fn, left=tp, color="#D1D5DB", label="Alvo não recuperado")
+        for row, (correct, missed) in enumerate(zip(tp, fn, strict=True)):
+            axes[0].text(correct / 2 if correct > 8 else correct + 2, row, f"{correct:.1f}", va="center", ha="center" if correct > 8 else "left", fontsize=9)
+            axes[0].text(correct + missed - 2, row, f"{missed:.1f}", va="center", ha="right", fontsize=9)
+        axes[0].set_yticks(y, labels)
+        axes[0].invert_yaxis()
+        axes[0].set_xlabel("Média de pontos do alvo (total = 200)")
+        axes[0].set_title("Quais pontos do alvo foram recuperados?")
+        axes[0].legend(
+            frameon=False, loc="upper center", bbox_to_anchor=(.5, -.12), ncol=2,
+        )
+
+        width = .24
+        for offset, (column, label, color) in enumerate((
+            ("precision", "Precisão", CATEGORICAL[0]),
+            ("recall", "Parcela do alvo recuperada", CATEGORICAL[1]),
+            ("f1", "Equilíbrio entre as duas", CATEGORICAL[2]),
+        )):
+            values = strong[column].to_numpy(float) * 100
+            positions = y + (offset - 1) * width
+            axes[1].barh(positions, values, height=width, color=color, label=label)
+            for position, value in zip(positions, values, strict=True):
+                axes[1].text(value + .7, position, f"{value:.1f}%", va="center", fontsize=8)
+        axes[1].set_yticks(y, labels)
+        axes[1].invert_yaxis()
+        axes[1].set_xlabel("Percentual")
+        axes[1].set_title("Qualidade da localização")
+        axes[1].legend(
+            frameon=False, loc="upper center", bbox_to_anchor=(.5, -.12), ncol=3,
+        )
+        axes[1].grid(axis="x", alpha=.3)
+        fig.suptitle(
+            "6. Cenário forte: taxa positiva de 50% para 80% dentro do alvo\n"
+            "Alvo = região circular com 200 dos 10.000 pontos (2%)",
+            y=.985,
+        )
+        fig.tight_layout(rect=(0, .08, 1, .94))
+        figures.append(("06_gabarito_ponto_a_ponto", fig))
     return figures
 
 
