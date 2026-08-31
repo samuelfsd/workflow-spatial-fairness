@@ -160,11 +160,11 @@ def _synthetic_matrix(canonical: pd.DataFrame):
     )
     if not detectors:
         detectors = ["sem resultados canônicos"]
-    matrix = np.zeros((len(datasets), len(detectors)), dtype=int)
+    matrix = np.zeros((len(detectors), len(datasets)), dtype=int)
     annotations = np.full(matrix.shape, "—", dtype=object)
     for row in frame.itertuples():
-        y = datasets.index(row.dataset)
-        x = detectors.index(row.detector)
+        y = detectors.index(row.detector)
+        x = datasets.index(row.dataset)
         matrix[y, x] = 1 if row.correct else 2
         count = row.significant_regions
         annotations[y, x] = (
@@ -177,15 +177,18 @@ def _synthetic_matrix(canonical: pd.DataFrame):
     ])
     norm = BoundaryNorm([-.5, .5, 1.5, 2.5], cmap.N)
     ax.imshow(matrix, cmap=cmap, norm=norm, aspect="auto")
-    for y in range(len(datasets)):
-        for x in range(len(detectors)):
+    for y in range(len(detectors)):
+        for x in range(len(datasets)):
             ax.text(x, y, annotations[y, x], ha="center", va="center", fontsize=9)
     detector_ticks = [label.replace(" + ", "\n+ ") for label in detectors]
-    ax.set_xticks(range(len(detectors)), detector_ticks, rotation=0, ha="center")
-    ax.set_yticks(range(len(datasets)), [DATASET_LABELS[item] for item in datasets])
+    ax.set_xticks(
+        range(len(datasets)), [DATASET_LABELS[item] for item in datasets],
+        rotation=0, ha="center",
+    )
+    ax.set_yticks(range(len(detectors)), detector_ticks)
     ax.set_title("Controles sintéticos — detector × cenário")
-    ax.set_xlabel("Configuração comparada")
-    ax.set_ylabel("Cenário com desenho conhecido")
+    ax.set_xlabel("Cenário com desenho conhecido")
+    ax.set_ylabel("Configuração comparada")
     ax.legend(
         handles=[
             Patch(facecolor=CATEGORICAL[0], label="✓ veredito correto"),

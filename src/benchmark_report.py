@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import csv
 import json
 import os
 import shutil
@@ -88,9 +89,41 @@ def _markdown(frame: pd.DataFrame) -> str:
     return "\n".join(lines) + "\n"
 
 
-def load_checkpoint_results(root: Path) -> pd.DataFrame:
+def _point_mask(value: object) -> bytes:
+    """Encode JSON point IDs as a compact arbitrary-precision bitset."""
+    if not isinstance(value, str) or not value:
+        return b""
+    try:
+        points = json.loads(value)
+    except json.JSONDecodeError:
+        return b""
+    mask = 0
+    for point in points:
+        mask |= 1 << int(point)
+    return mask.to_bytes((mask.bit_length() + 7) // 8, "little")
+
+
+def load_checkpoint_results(
+    root: Path,
+    *,
+    compact_point_ids: bool = False,
+    expected_plan: Mapping[str, Any] | None = None,
+    batch_size: int = 5000,
+) -> pd.DataFrame:
     """Read complete checkpoint results without recomputing scientific work."""
     frames: list[pd.DataFrame] = []
+    compact_file = None
+    compact_path = None
+    compact_writer = None
+    if compact_point_ids:
+        compact_file = tempfile.NamedTemporaryFile(
+            mode="w", encoding="utf-8", newline="", suffix=".csv", delete=False,
+        )
+        compact_path = Path(compact_file.name)
+    point_columns = {
+        "detected_point_ids", "directional_detected_point_ids",
+        "all_detected_point_ids",
+    }
     for manifest_path in sorted(Path(root).rglob("manifest.json")):
         try:
             manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
@@ -107,11 +140,35 @@ def load_checkpoint_results(root: Path) -> pd.DataFrame:
             continue
         if manifest.get("fingerprint") != spec.fingerprint:
             raise ValueError(f"fingerprint inválido no checkpoint: {manifest_path.parent}")
+        if expected_plan is not None and manifest["unit"].get("params", {}).get("plan") != dict(expected_plan):
+            raise ValueError(
+                "checkpoints incompatíveis com o plano informado; use uma saída separada"
+            )
         frame = pd.read_csv(result_path)
+        if compact_point_ids:
+            row = frame.iloc[0].to_dict()
+            for column in point_columns:
+                row.pop(column, None)
+            if compact_writer is None:
+                compact_writer = csv.DictWriter(
+                    compact_file, fieldnames=list(row), extrasaction="ignore"
+                )
+                compact_writer.writeheader()
+            compact_writer.writerow(row)
+            continue
         frame["checkpoint_fingerprint"] = manifest.get("fingerprint")
         frame["checkpoint_unit"] = json.dumps(manifest["unit"], sort_keys=True)
         frame["checkpoint_path"] = str(manifest_path.parent)
         frames.append(frame)
+    if compact_file is not None:
+        compact_file.close()
+        try:
+            return (
+                pd.read_csv(compact_path, low_memory=False)
+                if compact_writer is not None else pd.DataFrame()
+            )
+        finally:
+            compact_path.unlink(missing_ok=True)
     return pd.concat(frames, ignore_index=True, sort=False) if frames else pd.DataFrame()
 
 

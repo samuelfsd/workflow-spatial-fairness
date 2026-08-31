@@ -24,17 +24,15 @@ def load_repeated_plan(path: Path) -> RepeatedPlan:
 
 
 def _results(output_root: Path, plan: RepeatedPlan):
-    frame = load_checkpoint_results(output_root / "checkpoints" / "results")
+    expected = json.loads(json.dumps(plan.to_dict()))
+    frame = load_checkpoint_results(
+        output_root / "checkpoints" / "results",
+        compact_point_ids=True,
+        expected_plan=expected,
+    )
     if frame.empty:
         return frame
     frame = frame[frame["record_type"].eq("repeated_result")].copy()
-    expected = json.loads(json.dumps(plan.to_dict()))
-    for value in frame["checkpoint_unit"].dropna().unique():
-        unit = json.loads(value)
-        if unit.get("params", {}).get("plan") != expected:
-            raise ValueError(
-                "checkpoints incompatíveis com o plano informado; use uma saída separada"
-            )
     realization = ["scenario_id", "geometry_seed", "outcome_seed", "method_id"]
     duplicates = frame.duplicated(realization, keep=False)
     if duplicates.any():
@@ -42,6 +40,17 @@ def _results(output_root: Path, plan: RepeatedPlan):
             "checkpoints duplicados para a mesma realização e método; use uma saída separada"
         )
     return frame
+
+
+def _trial_plan(plan: RepeatedPlan) -> RepeatedPlan:
+    """Return the exact reduced plan persisted by the performance trial."""
+    return replace(
+        plan, plan_id=f"{plan.plan_id}-trial", geometry_seeds=plan.geometry_seeds[:2],
+        fair_outcomes_per_geometry=min(2, plan.fair_outcomes_per_geometry),
+        unfair_outcomes_per_geometry=min(2, plan.unfair_outcomes_per_geometry),
+        null_worlds=min(20, plan.null_worlds),
+        bootstrap_repetitions=min(100, plan.bootstrap_repetitions),
+    )
 
 
 def run_repeated_workflow(
@@ -57,12 +66,7 @@ def run_repeated_workflow(
     if phase == "run" and not confirm_official:
         raise PermissionError("a bateria oficial exige --confirm-official")
     if phase == "trial":
-        trial = replace(
-            plan, plan_id=f"{plan.plan_id}-trial", geometry_seeds=plan.geometry_seeds[:2],
-            fair_outcomes_per_geometry=min(2, plan.fair_outcomes_per_geometry),
-            unfair_outcomes_per_geometry=min(2, plan.unfair_outcomes_per_geometry),
-            null_worlds=min(20, plan.null_worlds), bootstrap_repetitions=min(100, plan.bootstrap_repetitions),
-        )
+        trial = _trial_plan(plan)
         scenarios = expand_plan(trial)
         selected = scenarios[scenarios["layer"].eq("core")].head(2)["scenario_id"].tolist()
         RepeatedBenchmarkRunner(trial, output_root / "checkpoints", coordinate_source=coordinate_source).run(scenario_ids=selected)
@@ -73,8 +77,21 @@ def run_repeated_workflow(
     if phase == "report":
         from repeated_report import publish_repeated_report
 
-        results = _results(output_root, plan)
+        try:
+            results = _results(output_root, plan)
+            report_plan = plan
+        except ValueError as official_error:
+            try:
+                report_plan = _trial_plan(plan)
+                results = _results(output_root, report_plan)
+            except ValueError:
+                raise official_error
         if results.empty:
             raise FileNotFoundError("nenhum checkpoint de resultado repetido disponível")
-        return publish_repeated_report(results, output_root / "report", n_bootstrap=plan.bootstrap_repetitions, seed=plan.bootstrap_seed, plan_metadata=plan.to_dict())
+        return publish_repeated_report(
+            results, output_root / "report",
+            n_bootstrap=report_plan.bootstrap_repetitions,
+            seed=report_plan.bootstrap_seed,
+            plan_metadata=report_plan.to_dict(),
+        )
     raise ValueError("phase deve ser trial, run ou report")
